@@ -1,0 +1,42 @@
+version: "3"
+
+services:
+  rabbitmq:
+    image: rabbitmq:3-management
+    container_name: rabbitmq
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    environment:
+      - RABBITMQ_DEFAULT_USER=guest
+      - RABBITMQ_DEFAULT_PASS=guest
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    networks:
+      - rmq_network
+
+  rmq-board:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: rmq-board
+    ports:
+      - "3000:3000"
+    environment:
+      - RABBITMQ_URL=http://rabbitmq:15672
+      - RABBITMQ_USERNAME=guest
+      - RABBITMQ_PASSWORD=guest
+      - REFRESH_INTERVAL=5000
+      - BASE_PATH=/
+      - PORT=3000
+    depends_on:
+      - rabbitmq
+    networks:
+      - rmq_network
+
+networks:
+  rmq_network:
+    driver: bridge
+
+volumes:
+  rabbitmq_data:
