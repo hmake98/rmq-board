@@ -148,7 +148,9 @@ async function viewQueueMessages(vhost, queueName) {
 
         const encodedVhost = encodeURIComponent(vhost);
         const encodedName = encodeURIComponent(queueName);
-        const response = await fetch(`${window.location.pathname}/api/queues/${encodedVhost}/${encodedName}/get`);
+        const apiUrl = `${window.location.origin}/api/queues/${encodedVhost}/${encodedName}/get`;
+        console.log('Fetching messages from:', apiUrl);
+        const response = await fetch(apiUrl);
 
         if (!response.ok) {
             throw new Error(`HTTP error ${response.status}`);

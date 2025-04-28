@@ -1,9 +1,10 @@
-version: "3"
+version: "3.8"
 
 services:
   rabbitmq:
     image: rabbitmq:3-management
     container_name: rabbitmq
+    hostname: rabbitmq
     ports:
       - "5672:5672"
       - "15672:15672"
@@ -14,6 +15,13 @@ services:
       - rabbitmq_data:/var/lib/rabbitmq
     networks:
       - rmq_network
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "check_port_connectivity"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    restart: unless-stopped
 
   rmq-board:
     build:
@@ -24,15 +32,34 @@ services:
       - "3000:3000"
     environment:
       - RABBITMQ_URL=http://rabbitmq:15672
+      - RABBITMQ_AMQP_URL=amqp://rabbitmq:5672
       - RABBITMQ_USERNAME=guest
       - RABBITMQ_PASSWORD=guest
       - REFRESH_INTERVAL=5000
       - BASE_PATH=/
       - PORT=3000
+      - MAX_RETRIES=5
+      - RETRY_TIMEOUT=3000
     depends_on:
-      - rabbitmq
+      rabbitmq:
+        condition: service_healthy
     networks:
       - rmq_network
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "wget",
+          "--no-verbose",
+          "--tries=1",
+          "--spider",
+          "http://localhost:3000/api/health",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
 
 networks:
   rmq_network:
