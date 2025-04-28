@@ -1,0 +1,31 @@
+<div class="search-container">
+    <input type="text" id="queue-search" class="search-input" placeholder="Search queues by name...">
+</div>
+
+<div class="card">
+    <div class="card-header">
+        Queues
+        <button id="refresh-queues" class="button button-secondary button-sm">
+            <span class="button-icon">↻</span> Refresh
+        </button>
+    </div>
+    <div class="card-body responsive-table">
+        <table id="queues-table">
+            <thead>
+                <tr>
+                    <th>Name</th>
+                    <th>State</th>
+                    <th>Messages</th>
+                    <th>Consumers</th>
+                    <th>Actions</th>
+                </tr>
+            </thead>
+            <tbody id="queues-table-body">
+                <tr>
+                    <td colspan="5" class="loading">Loading queues...</td>
+                </tr>
+            </tbody>
+        </table>
+    </div>
+</div>
+<div class="last-updated" id="queues-last-updated">Last updated: never</div>

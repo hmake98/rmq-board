@@ -1,0 +1,30 @@
+<div class="search-container">
+    <input type="text" id="binding-search" class="search-input" placeholder="Search bindings...">
+</div>
+
+<div class="card">
+    <div class="card-header">
+        Bindings
+        <button id="refresh-bindings" class="button button-secondary button-sm">
+            <span class="button-icon">↻</span> Refresh
+        </button>
+    </div>
+    <div class="card-body responsive-table">
+        <table id="bindings-table">
+            <thead>
+                <tr>
+                    <th>Source</th>
+                    <th>Destination</th>
+                    <th>Routing Key</th>
+                    <th>Arguments</th>
+                </tr>
+            </thead>
+            <tbody id="bindings-table-body">
+                <tr>
+                    <td colspan="4" class="loading">Loading bindings...</td>
+                </tr>
+            </tbody>
+        </table>
+    </div>
+</div>
+<div class="last-updated" id="bindings-last-updated">Last updated: never</div>
