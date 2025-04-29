@@ -7,7 +7,11 @@
  */
 async function updateBindings() {
     try {
-        const response = await fetch(`${window.location.pathname}/api/bindings`);
+        // Fix: Use the correct base URL for the API
+        const baseUrl = window.location.origin; // Get the domain root
+        const apiUrl = `${baseUrl}/api/bindings`;
+
+        const response = await fetch(apiUrl);
 
         if (!response.ok) {
             throw new Error(`HTTP error ${response.status}`);

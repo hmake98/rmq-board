@@ -36,7 +36,9 @@ async function loadExchangesForPublish() {
         exchangeSelect.innerHTML = '<option value="">Loading exchanges...</option>';
         exchangeSelect.disabled = true;
 
-        const response = await fetch(`${window.location.pathname}/api/exchanges`);
+        // Fix: Use the correct base URL for the API
+        const baseUrl = window.location.origin;
+        const response = await fetch(`${baseUrl}/api/exchanges`);
 
         if (!response.ok) {
             throw new Error(`HTTP error ${response.status}`);
@@ -165,7 +167,9 @@ async function handlePublishFormSubmit(event) {
         const encodedVhost = encodeURIComponent(vhost);
         const encodedName = encodeURIComponent(exchangeName);
 
-        const response = await fetch(`${window.location.pathname}/api/exchanges/${encodedVhost}/${encodedName}/publish`, {
+        // Fix: Use the correct base URL for the API
+        const baseUrl = window.location.origin;
+        const response = await fetch(`${baseUrl}/api/exchanges/${encodedVhost}/${encodedName}/publish`, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json'

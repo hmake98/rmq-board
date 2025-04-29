@@ -65,7 +65,7 @@ class Router {
      * Set up static file serving
      */
     setupStaticFiles() {
-        this.router.use('/static', express.static(path.join(__dirname, '..', '..', 'public')));
+        this.router.use('/static', express.static(path.join(__dirname, '../../public')));
     }
 
     /**

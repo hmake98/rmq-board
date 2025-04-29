@@ -313,7 +313,7 @@ class RabbitMQAdmin {
      */
     setupRoutes() {
         // Serve static files
-        this.router.use('/static', express.static(path.join(__dirname, 'public')));
+        this.router.use('/static', express.static(path.join(__dirname, '../../public')));
 
         // Enable JSON parsing
         this.router.use(express.json());

@@ -203,7 +203,11 @@ function refreshData(section) {
     refreshButton.appendChild(document.createTextNode(' Refreshing...'));
     refreshButton.disabled = true;
 
-    fetch(`${window.location.pathname}/api/${section}`)
+    // Fix: Use the correct base URL for the API
+    const baseUrl = window.location.origin; // Get the domain root
+    const apiUrl = `${baseUrl}/api/${section}`;
+
+    fetch(apiUrl)
         .then(res => {
             if (!res.ok) {
                 throw new Error(`HTTP error ${res.status}`);
