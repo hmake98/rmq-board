@@ -1,8 +1,8 @@
 // src/server.js
 require('dotenv').config();
-const RabbitMQAdmin = require('./lib/RabbitMQAdmin');
-const { createLogger } = require('./lib/Logger');
-const { loadConfig } = require('./utils/config');
+const RabbitMQAdmin = require('./src/lib/RabbitMQAdmin');
+const { createLogger } = require('./src/lib/Logger');
+const { loadConfig } = require('./src/utils/config');
 
 // Initialize logger
 const logger = createLogger();
