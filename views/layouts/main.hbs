@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <title>{{title}}</title>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link rel="stylesheet" href="{{basePath}}static/css/styles.css">
+    <link rel="shortcut icon" href="{{basePath}}static/favicon.ico">
+</head>
+<body>
+    {{> header}}
+
+    <div class="container">
+        {{> tabs}}
+
+        <div id="overview-tab" class="tab-content active">
+            {{> overview}}
+        </div>
+
+        <div id="queues-tab" class="tab-content">
+            {{> queues}}
+        </div>
+
+        <div id="exchanges-tab" class="tab-content">
+            {{> exchanges}}
+        </div>
+
+        <div id="bindings-tab" class="tab-content">
+            {{> bindings}}
+        </div>
+
+        <div id="publish-tab" class="tab-content">
+            {{> publish}}
+        </div>
+    </div>
+
+    {{> modal}}
+    {{> toast}}
+
+    <script src="{{basePath}}static/socket.io.min.js"></script>
+    <script src="{{basePath}}static/js/main.js"></script>
+    <script src="{{basePath}}static/js/overview.js"></script>
+    <script src="{{basePath}}static/js/queues.js"></script>
+    <script src="{{basePath}}static/js/exchanges.js"></script>
+    <script src="{{basePath}}static/js/bindings.js"></script>
+    <script src="{{basePath}}static/js/publish.js"></script>
+    <script src="{{basePath}}static/js/utils.js"></script>
+</body>
+</html>

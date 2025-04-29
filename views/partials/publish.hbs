@@ -8,7 +8,7 @@
                 <label for="exchange-select" class="form-label">Exchange</label>
                 <select id="exchange-select" class="form-select" required>
                     <option value="">Select an exchange</option>
-                    <!-- Options will be populated dynamically -->
+                    {{!-- Options will be populated dynamically via JavaScript --}}
                 </select>
             </div>
             <div class="form-group">
@@ -23,8 +23,7 @@
                         <input type="text" id="content-type" class="form-input" placeholder="application/json">
                     </div>
                     <div style="flex: 1; min-width: 150px;">
-                        <label for="correlation-id" class="form-label" style="font-size: 0.75rem;">Correlation
-                            ID</label>
+                        <label for="correlation-id" class="form-label" style="font-size: 0.75rem;">Correlation ID</label>
                         <input type="text" id="correlation-id" class="form-input">
                     </div>
                 </div>
