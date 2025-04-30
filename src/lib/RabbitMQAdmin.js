@@ -1,16 +1,17 @@
-// RabbitMQAdmin.js
+// src/lib/RabbitMQAdmin.js
+// Ultra-simplified implementation using a single RABBITMQ_URL
 const express = require('express');
 const path = require('path');
 const http = require('http');
 const socketIo = require('socket.io');
-const axios = require('axios');
+const exphbs = require('express-handlebars');
 const amqp = require('amqplib');
-const winston = require('winston');
-const exphbs = require('express-handlebars'); // Require handlebars
+const axios = require('axios');
+const { loadConfig } = require('../utils/config');
 
 /**
  * RabbitMQ Admin UI for monitoring and managing RabbitMQ servers
- * @class
+ * Simplified to work with a single RABBITMQ_URL environment variable
  */
 class RabbitMQAdmin {
     /**
@@ -18,99 +19,178 @@ class RabbitMQAdmin {
      * @param {Object} options - Configuration options
      */
     constructor(options = {}) {
-        // Configure logger
-        this.logger = this._setupLogger(options.logger);
+        // Load config from environment and merge with options
+        const config = loadConfig();
+        this.config = { ...config, ...options };
 
-        // Configuration options with defaults
-        this.options = {
-            rabbitMQUrl: options.rabbitMQUrl || 'http://localhost:15672',
-            amqpUrl: options.amqpUrl || 'amqp://localhost:5672',
-            username: options.username || 'guest',
-            password: options.password || 'guest',
-            refreshInterval: options.refreshInterval || 5000, // 5 seconds
-            basePath: this._normalizePath(options.basePath || '/'),
-            maxRetries: options.maxRetries || 5,
-            retryTimeout: options.retryTimeout || 3000, // 3 seconds initial retry timeout
-            ...options
-        };
+        // Set up logger
+        this.logger = options.logger || console;
 
-        // Infrastructure components
+        // Initialize state
         this.app = null;
         this.server = null;
         this.io = null;
         this.router = express.Router();
-
-        // Connection state
+        this.httpClient = null;
         this.amqpConnection = null;
         this.amqpChannel = null;
-        this.retryCount = 0;
-        this.isConnecting = false;
         this.connectedClients = new Set();
-        this.reconnectTimer = null;
         this.updateIntervals = new Map();
 
-        // Cache for performance
+        // Connection states
+        this.httpConnected = false;
+        this.amqpConnected = false;
+        this.useHttpOnly = this.config.skipAmqpConnection || false;
+
+        // Cache for API calls
         this.cache = {
             overview: null,
             queues: null,
             exchanges: null,
             bindings: null,
-            lastUpdated: {
-                overview: null,
-                queues: null,
-                exchanges: null,
-                bindings: null
-            }
+            lastUpdated: {}
         };
 
-        // Set up API routes
+        // Set up routes
         this.setupRoutes();
     }
 
     /**
-     * Set up a configured logger
-     * @param {Object} customLogger - Optional external logger
-     * @returns {Object} Configured logger
-     * @private
+     * Initialize API clients
      */
-    _setupLogger(customLogger) {
-        if (customLogger) return customLogger;
+    async initialize() {
+        // Initialize HTTP client first
+        try {
+            await this._initializeHttpClient();
+        } catch (error) {
+            this.logger.error(`Failed to connect to RabbitMQ API: ${error.message}`);
+            throw new Error('Cannot connect to RabbitMQ Management API');
+        }
 
-        return winston.createLogger({
-            level: process.env.LOG_LEVEL || 'info',
-            format: winston.format.combine(
-                winston.format.timestamp(),
-                winston.format.printf(({ level, message, timestamp }) => {
-                    return `${timestamp} ${level.toUpperCase()}: ${message}`;
-                })
-            ),
-            transports: [
-                new winston.transports.Console({
-                    format: winston.format.combine(
-                        winston.format.colorize(),
-                        winston.format.simple()
-                    )
-                })
-            ]
-        });
+        // Skip AMQP if configured to do so
+        if (this.config.skipAmqpConnection) {
+            this.logger.info('AMQP connection disabled by configuration');
+            this.useHttpOnly = true;
+            return;
+        }
+
+        // Try to initialize AMQP client, but don't fail if unsuccessful
+        try {
+            await this._initializeAmqpClient();
+        } catch (error) {
+            this.logger.warn(`AMQP connection failed: ${error.message}. Using HTTP-only mode.`);
+            this.useHttpOnly = true;
+        }
     }
 
     /**
-     * Normalize path to ensure it starts with a slash
-     * @param {string} path - Path to normalize
-     * @returns {string} Normalized path
+     * Initialize HTTP client
      * @private
      */
-    _normalizePath(path) {
-        // Ensure path starts with a slash
-        if (!path.startsWith('/')) {
-            path = '/' + path;
+    async _initializeHttpClient() {
+        // Create axios client with proper options
+        const clientOptions = {
+            baseURL: this.config.rabbitMQUrl,
+            auth: {
+                username: this.config.username,
+                password: this.config.password
+            },
+            timeout: this.config.isAwsMq ? 30000 : 10000 // Longer timeout for AWS MQ
+        };
+
+        this.httpClient = axios.create(clientOptions);
+
+        // Test connection to the API
+        try {
+            // Try standard endpoint
+            try {
+                await this.httpClient.get('/api/overview');
+            } catch (error) {
+                // For AWS MQ, try root endpoint if standard fails
+                if (this.config.isAwsMq) {
+                    this.logger.info('Trying alternative endpoint for AWS MQ');
+                    await this.httpClient.get('/');
+                } else {
+                    throw error;
+                }
+            }
+
+            this.httpConnected = true;
+            this.logger.info('Connected to RabbitMQ Management API');
+            return true;
+        } catch (error) {
+            this.httpConnected = false;
+            throw error;
         }
-        // Ensure path ends with a slash if not root
-        if (path !== '/' && !path.endsWith('/')) {
-            path += '/';
+    }
+
+    /**
+     * Initialize AMQP client
+     * @private
+     */
+    async _initializeAmqpClient() {
+        // Mask password in URL for logging
+        const maskedUrl = this.config.amqpUrl.replace(/(\/\/[^:]+:)([^@]+)(@)/, '$1***$3');
+        this.logger.info(`Connecting to RabbitMQ via AMQP: ${maskedUrl}`);
+
+        // CloudAMQP fix: Make sure we're using the right vhost 
+        // (CloudAMQP often uses the username as the vhost)
+        let amqpOptions = {};
+
+        // For CloudAMQP, the vhost is often the same as the username
+        if (this.config.isCloudAMQP) {
+            // Create a deep copy of the URL to avoid modifying the original
+            const amqpUrl = new URL(this.config.amqpUrl);
+
+            // Set the vhost to the username if not explicitly specified
+            if (amqpUrl.pathname === '/' || amqpUrl.pathname === '') {
+                amqpUrl.pathname = `/${amqpUrl.username}`;
+                this.logger.info(`CloudAMQP detected, setting vhost to username: ${amqpUrl.pathname}`);
+            }
+
+            try {
+                // Connect using the modified AMQP URL for CloudAMQP
+                this.amqpConnection = await amqp.connect(amqpUrl.toString(), amqpOptions);
+            } catch (error) {
+                // Log the error with details but without credentials
+                this.logger.error(`AMQP connection error to CloudAMQP: ${error.message}`);
+                throw error;
+            }
+        } else {
+            try {
+                // Connect using the direct AMQP URL from config for non-CloudAMQP
+                this.amqpConnection = await amqp.connect(this.config.amqpUrl, amqpOptions);
+            } catch (error) {
+                this.logger.error(`AMQP connection error: ${error.message}`);
+                throw error;
+            }
         }
-        return path;
+
+        try {
+            this.amqpChannel = await this.amqpConnection.createChannel();
+
+            // Set up event handlers
+            this.amqpConnection.on('error', (err) => {
+                this.logger.error(`AMQP connection error: ${err.message}`);
+                this.amqpConnected = false;
+                this.useHttpOnly = true;
+            });
+
+            this.amqpConnection.on('close', () => {
+                this.logger.info('AMQP connection closed');
+                this.amqpConnected = false;
+                this.useHttpOnly = true;
+            });
+
+            this.amqpConnected = true;
+            this.logger.info('Successfully connected to RabbitMQ via AMQP');
+            return true;
+        } catch (error) {
+            this.logger.error(`Failed to create AMQP channel: ${error.message}`);
+            this.amqpConnected = false;
+            this.useHttpOnly = true;
+            throw error;
+        }
     }
 
     /**
@@ -125,10 +205,7 @@ class RabbitMQAdmin {
             layoutsDir: path.join(__dirname, '../../views/layouts'),
             partialsDir: path.join(__dirname, '../../views/partials'),
             helpers: {
-                // Custom Handlebars helpers
-                eq: function (a, b) {
-                    return a === b;
-                },
+                eq: function (a, b) { return a === b; },
                 formatTimestamp: function (timestamp) {
                     return new Date(timestamp).toLocaleString();
                 },
@@ -144,168 +221,11 @@ class RabbitMQAdmin {
     }
 
     /**
-     * Connect to RabbitMQ via AMQP
-     * @returns {Promise<boolean>} Success status
+     * Check if AMQP channel is available
+     * @returns {boolean}
      */
-    async connect() {
-        if (this.isConnecting) {
-            this.logger.debug('Connection attempt already in progress');
-            return false;
-        }
-
-        this.isConnecting = true;
-
-        try {
-            // Build connection string with credentials
-            const amqpConnectionString = this._buildAmqpConnectionString();
-
-            this.logger.info('Connecting to RabbitMQ via AMQP...');
-            this.amqpConnection = await amqp.connect(amqpConnectionString);
-            this.amqpChannel = await this.amqpConnection.createChannel();
-
-            // Reset retry counter on successful connection
-            this.retryCount = 0;
-            this.isConnecting = false;
-
-            // Set up connection event handlers
-            this._setupConnectionHandlers();
-
-            this.logger.info('Successfully connected to RabbitMQ via AMQP');
-
-            // Notify connected clients about the successful connection
-            this._broadcastConnectionStatus();
-
-            return true;
-        } catch (error) {
-            this.isConnecting = false;
-            this.logger.error('Failed to connect to RabbitMQ via AMQP:', error.message);
-            this._reconnect();
-            return false;
-        }
-    }
-
-    /**
-     * Set up AMQP connection event handlers
-     * @private
-     */
-    _setupConnectionHandlers() {
-        if (!this.amqpConnection) return;
-
-        this.amqpConnection.on('error', (err) => {
-            this.logger.error('AMQP connection error:', err.message);
-            this._reconnect();
-        });
-
-        this.amqpConnection.on('close', () => {
-            if (this.amqpConnection) { // Only reconnect if not deliberately closed
-                this.logger.info('AMQP connection closed, attempting to reconnect...');
-                this._reconnect();
-            }
-        });
-    }
-
-    /**
-     * Build AMQP connection string with credentials
-     * @returns {string} AMQP connection string
-     * @private
-     */
-    _buildAmqpConnectionString() {
-        const username = encodeURIComponent(this.options.username);
-        const password = encodeURIComponent(this.options.password);
-
-        // Parse the AMQP URL or construct it
-        let amqpUrl = this.options.amqpUrl;
-        if (!amqpUrl.includes('@')) {
-            try {
-                const urlObj = new URL(amqpUrl);
-                urlObj.username = username;
-                urlObj.password = password;
-                amqpUrl = urlObj.toString();
-            } catch (error) {
-                throw new Error(`Invalid AMQP URL: ${error.message}`);
-            }
-        }
-
-        return amqpUrl;
-    }
-
-    /**
-     * Attempt to reconnect to RabbitMQ with exponential backoff
-     * @private
-     */
-    _reconnect() {
-        if (this.isConnecting || this.reconnectTimer) {
-            return;
-        }
-
-        if (this.retryCount >= this.options.maxRetries) {
-            this.logger.error(`Failed to connect to RabbitMQ after ${this.options.maxRetries} attempts. Giving up.`);
-            this._broadcastConnectionStatus(false, `Failed to connect after ${this.options.maxRetries} attempts`);
-            return;
-        }
-
-        // Exponential backoff with jitter
-        const baseTimeout = this.options.retryTimeout * Math.pow(2, this.retryCount);
-        const jitter = Math.floor(Math.random() * 1000); // Add up to 1 second of jitter
-        const timeout = baseTimeout + jitter;
-
-        this.retryCount++;
-
-        this.logger.info(`Attempting to reconnect to RabbitMQ in ${(timeout / 1000).toFixed(1)} seconds (attempt ${this.retryCount}/${this.options.maxRetries})...`);
-
-        // Clear any existing reconnect timer
-        if (this.reconnectTimer) {
-            clearTimeout(this.reconnectTimer);
-        }
-
-        // Schedule reconnection attempt
-        this.reconnectTimer = setTimeout(async () => {
-            this.reconnectTimer = null;
-
-            // Close existing connections if they exist
-            await this.closeConnection();
-
-            // Try to connect again
-            this.connect();
-        }, timeout);
-    }
-
-    /**
-     * Close the AMQP connection and channel
-     * @returns {Promise<void>}
-     */
-    async closeConnection() {
-        // Clear any reconnect timer
-        if (this.reconnectTimer) {
-            clearTimeout(this.reconnectTimer);
-            this.reconnectTimer = null;
-        }
-
-        // Close channel if it exists
-        if (this.amqpChannel) {
-            try {
-                this.logger.debug('Closing AMQP channel...');
-                await this.amqpChannel.close();
-                this.logger.debug('AMQP channel closed');
-            } catch (err) {
-                this.logger.warn('Error closing AMQP channel:', err.message);
-            } finally {
-                this.amqpChannel = null;
-            }
-        }
-
-        // Close connection if it exists
-        if (this.amqpConnection) {
-            try {
-                this.logger.debug('Closing AMQP connection...');
-                await this.amqpConnection.close();
-                this.logger.debug('AMQP connection closed');
-            } catch (err) {
-                this.logger.warn('Error closing AMQP connection:', err.message);
-            } finally {
-                this.amqpConnection = null;
-            }
-        }
+    isAmqpConnected() {
+        return this.amqpConnected && this.amqpChannel && !this.useHttpOnly;
     }
 
     /**
@@ -319,7 +239,7 @@ class RabbitMQAdmin {
         this.router.use(express.json());
         this.router.use(express.urlencoded({ extended: true }));
 
-        // Add headers for security
+        // Security headers
         this.router.use((req, res, next) => {
             res.setHeader('X-Content-Type-Options', 'nosniff');
             res.setHeader('X-Frame-Options', 'SAMEORIGIN');
@@ -330,9 +250,9 @@ class RabbitMQAdmin {
         // Main dashboard route
         this.router.get('/', (req, res) => {
             res.render('dashboard', {
-                title: 'RabbitMQ Board',
-                basePath: this.options.basePath,
-                layout: 'main' // Specify handlebars layout
+                title: 'RabbitMQ Dashboard',
+                basePath: this.config.basePath,
+                layout: 'main'
             });
         });
 
@@ -351,7 +271,6 @@ class RabbitMQAdmin {
                 const data = await this.fetchFromRabbitMQ('/api/overview', 'overview');
                 res.json(data);
             } catch (error) {
-                this.logger.error('Error fetching overview:', error.message);
                 res.status(500).json({ error: error.message });
             }
         });
@@ -362,13 +281,12 @@ class RabbitMQAdmin {
                 const data = await this.fetchFromRabbitMQ('/api/queues', 'queues');
 
                 // Enhance with AMQP data if available
-                if (this.amqpChannel) {
-                    await this.enhanceQueuesWithAmqpData(data);
+                if (this.isAmqpConnected()) {
+                    await this._enhanceQueuesWithAmqpData(data);
                 }
 
                 res.json(data);
             } catch (error) {
-                this.logger.error('Error fetching queues:', error.message);
                 res.status(500).json({ error: error.message });
             }
         });
@@ -379,7 +297,6 @@ class RabbitMQAdmin {
                 const data = await this.fetchFromRabbitMQ('/api/exchanges', 'exchanges');
                 res.json(data);
             } catch (error) {
-                this.logger.error('Error fetching exchanges:', error.message);
                 res.status(500).json({ error: error.message });
             }
         });
@@ -390,7 +307,6 @@ class RabbitMQAdmin {
                 const data = await this.fetchFromRabbitMQ('/api/bindings', 'bindings');
                 res.json(data);
             } catch (error) {
-                this.logger.error('Error fetching bindings:', error.message);
                 res.status(500).json({ error: error.message });
             }
         });
@@ -402,21 +318,20 @@ class RabbitMQAdmin {
                 let messages = [];
 
                 // Try AMQP first if available
-                if (this.amqpChannel) {
+                if (this.isAmqpConnected()) {
                     try {
-                        messages = await this.getMessagesViaAmqp(vhost, name, 10);
+                        messages = await this._getMessagesViaAmqp(vhost, name, 10);
                     } catch (amqpError) {
-                        this.logger.warn(`Error getting messages via AMQP: ${amqpError.message}. Falling back to HTTP API.`);
-                        messages = await this.getMessagesViaHttp(vhost, name);
+                        this.logger.warn(`Error getting messages via AMQP: ${amqpError.message}. Falling back to HTTP.`);
+                        messages = await this._getMessagesViaHttp(vhost, name);
                     }
                 } else {
                     // Fall back to HTTP API
-                    messages = await this.getMessagesViaHttp(vhost, name);
+                    messages = await this._getMessagesViaHttp(vhost, name);
                 }
 
                 res.json(messages);
             } catch (error) {
-                this.logger.error('Error getting queue messages:', error.message);
                 res.status(500).json({ error: error.message });
             }
         });
@@ -427,26 +342,25 @@ class RabbitMQAdmin {
                 const { vhost, name } = req.params;
 
                 // Try AMQP first if available
-                if (this.amqpChannel) {
+                if (this.isAmqpConnected()) {
                     try {
                         await this.amqpChannel.purgeQueue(name);
                         this.logger.info(`Queue ${name} purged successfully via AMQP`);
                         res.json({ success: true, message: 'Queue purged successfully' });
                         return;
                     } catch (amqpError) {
-                        this.logger.warn(`Error purging queue via AMQP: ${amqpError.message}. Falling back to HTTP API.`);
+                        this.logger.warn(`Error purging queue via AMQP: ${amqpError.message}. Falling back to HTTP.`);
                     }
                 }
 
                 // Fall back to HTTP API
                 const encodedVhost = encodeURIComponent(vhost);
                 const endpoint = `/api/queues/${encodedVhost}/${name}/purge`;
-                await this.postToRabbitMQ(endpoint, {});
+                await this.httpClient.post(endpoint);
 
                 this.logger.info(`Queue ${name} purged successfully via HTTP API`);
                 res.json({ success: true, message: 'Queue purged successfully' });
             } catch (error) {
-                this.logger.error('Error purging queue:', error.message);
                 res.status(500).json({ error: error.message });
             }
         });
@@ -455,21 +369,15 @@ class RabbitMQAdmin {
         this.router.get('/api/health', async (req, res) => {
             const health = {
                 status: 'UP',
-                amqp: this.amqpChannel ? 'CONNECTED' : 'DISCONNECTED',
-                http: true, // We'll test this below
+                amqp: this.isAmqpConnected() ? 'CONNECTED' : 'DISCONNECTED',
+                http: this.httpConnected,
                 timestamp: new Date().toISOString()
             };
 
-            try {
-                // Quick test of the HTTP API
-                await this.fetchFromRabbitMQ('/api/overview', null, 0);
-            } catch (error) {
-                health.http = false;
-                health.status = 'DEGRADED';
-            }
-
             if (!health.amqp && !health.http) {
                 health.status = 'DOWN';
+            } else if (!health.amqp) {
+                health.status = 'DEGRADED';
             }
 
             res.json(health);
@@ -486,7 +394,7 @@ class RabbitMQAdmin {
                 }
 
                 // Try AMQP first if available
-                if (this.amqpChannel) {
+                if (this.isAmqpConnected()) {
                     try {
                         const content = Buffer.from(
                             typeof payload === 'string' ? payload : JSON.stringify(payload)
@@ -498,7 +406,7 @@ class RabbitMQAdmin {
                         res.json({ success: true, message: 'Message published successfully' });
                         return;
                     } catch (amqpError) {
-                        this.logger.warn(`Error publishing message via AMQP: ${amqpError.message}. Falling back to HTTP API.`);
+                        this.logger.warn(`Error publishing message via AMQP: ${amqpError.message}. Falling back to HTTP.`);
                     }
                 }
 
@@ -513,14 +421,50 @@ class RabbitMQAdmin {
                     payload_encoding: 'string'
                 };
 
-                const result = await this.postToRabbitMQ(endpoint, data);
+                const result = await this.httpClient.post(endpoint, data);
                 this.logger.info(`Message published to exchange ${name} with routing key ${routingKey} via HTTP API`);
-                res.json(result);
+                res.json(result.data);
             } catch (error) {
-                this.logger.error('Error publishing message:', error.message);
                 res.status(500).json({ error: error.message });
             }
         });
+    }
+
+    /**
+     * Fetch data from RabbitMQ API with caching
+     * @param {string} endpoint - API endpoint
+     * @param {string} cacheKey - Cache key for storing results
+     * @param {number} cacheTTL - Cache time-to-live in milliseconds
+     * @returns {Promise<Object>} API response data
+     */
+    async fetchFromRabbitMQ(endpoint, cacheKey, cacheTTL = 5000) {
+        // Check cache if applicable
+        if (cacheKey && this.cache[cacheKey] && this.cache.lastUpdated[cacheKey]) {
+            const cacheAge = Date.now() - this.cache.lastUpdated[cacheKey];
+            if (cacheAge < cacheTTL) {
+                return this.cache[cacheKey];
+            }
+        }
+
+        try {
+            const response = await this.httpClient.get(endpoint);
+
+            // Update cache if applicable
+            if (cacheKey) {
+                this.cache[cacheKey] = response.data;
+                this.cache.lastUpdated[cacheKey] = Date.now();
+            }
+
+            return response.data;
+        } catch (error) {
+            // Return cached data if available, even if expired
+            if (cacheKey && this.cache[cacheKey]) {
+                this.logger.info(`Returning cached data for ${cacheKey} due to API error`);
+                return this.cache[cacheKey];
+            }
+
+            throw error;
+        }
     }
 
     /**
@@ -528,30 +472,32 @@ class RabbitMQAdmin {
      * @param {string} vhost - Virtual host
      * @param {string} name - Queue name
      * @returns {Promise<Array>} Array of messages
+     * @private
      */
-    async getMessagesViaHttp(vhost, name) {
+    async _getMessagesViaHttp(vhost, name) {
         const encodedVhost = encodeURIComponent(vhost);
         const endpoint = `/api/queues/${encodedVhost}/${name}/get`;
 
-        const data = await this.postToRabbitMQ(endpoint, {
+        const response = await this.httpClient.post(endpoint, {
             count: 10,
             requeue: true,
             encoding: 'auto',
             truncate: 50000
         });
 
-        return data;
+        return response.data;
     }
 
     /**
      * Get messages from a queue via AMQP
-     * @param {string} vhost - Virtual host
+     * @param {string} vhost - Virtual host (ignored, using connection's vhost)
      * @param {string} queueName - Queue name
      * @param {number} count - Maximum number of messages to get
      * @returns {Promise<Array>} Array of messages
+     * @private
      */
-    async getMessagesViaAmqp(vhost, queueName, count = 10) {
-        if (!this.amqpChannel) {
+    async _getMessagesViaAmqp(vhost, queueName, count = 10) {
+        if (!this.isAmqpConnected()) {
             throw new Error('AMQP channel not available');
         }
 
@@ -569,7 +515,7 @@ class RabbitMQAdmin {
                 break;
             }
 
-            // Parse content
+            // Get content and try to parse it
             let content = msg.content.toString();
             try {
                 content = JSON.parse(content);
@@ -594,9 +540,10 @@ class RabbitMQAdmin {
     /**
      * Enhance queue data with AMQP information
      * @param {Array} queues - Array of queue objects
+     * @private
      */
-    async enhanceQueuesWithAmqpData(queues) {
-        if (!this.amqpChannel) return;
+    async _enhanceQueuesWithAmqpData(queues) {
+        if (!this.isAmqpConnected() || !queues.length) return;
 
         // Process queues in batches to avoid overwhelming the server
         const batchSize = 10;
@@ -621,83 +568,9 @@ class RabbitMQAdmin {
                         queue.message_stats = {};
                     }
                 } catch (error) {
-                    this.logger.debug(`Could not enhance queue ${queue.name} with AMQP data: ${error.message}`);
+                    // Skip this queue if it can't be enhanced
                 }
             }));
-        }
-    }
-
-    /**
-     * Fetch data from RabbitMQ API with caching
-     * @param {string} endpoint - API endpoint
-     * @param {string|null} cacheKey - Cache key for storing results
-     * @param {number} cacheTTL - Cache time-to-live in milliseconds
-     * @returns {Promise<Object>} API response data
-     */
-    async fetchFromRabbitMQ(endpoint, cacheKey = null, cacheTTL = 5000) {
-        // Check cache if applicable
-        if (cacheKey && this.cache[cacheKey] && this.cache.lastUpdated[cacheKey]) {
-            const cacheAge = Date.now() - this.cache.lastUpdated[cacheKey];
-            if (cacheAge < cacheTTL) {
-                return this.cache[cacheKey];
-            }
-        }
-
-        try {
-            const url = `${this.options.rabbitMQUrl}${endpoint}`;
-            const auth = Buffer.from(`${this.options.username}:${this.options.password}`).toString('base64');
-
-            const response = await axios.get(url, {
-                headers: {
-                    'Authorization': `Basic ${auth}`,
-                    'Content-Type': 'application/json'
-                },
-                timeout: 5000 // 5 second timeout
-            });
-
-            // Update cache if applicable
-            if (cacheKey) {
-                this.cache[cacheKey] = response.data;
-                this.cache.lastUpdated[cacheKey] = Date.now();
-            }
-
-            return response.data;
-        } catch (error) {
-            this.logger.error(`Error fetching from RabbitMQ (${endpoint}):`, error.message);
-
-            // Return cached data if available, even if expired
-            if (cacheKey && this.cache[cacheKey]) {
-                this.logger.info(`Returning cached data for ${cacheKey} due to API error`);
-                return this.cache[cacheKey];
-            }
-
-            throw error;
-        }
-    }
-
-    /**
-     * Post data to RabbitMQ API
-     * @param {string} endpoint - API endpoint
-     * @param {Object} data - Data to send
-     * @returns {Promise<Object>} API response data
-     */
-    async postToRabbitMQ(endpoint, data) {
-        try {
-            const url = `${this.options.rabbitMQUrl}${endpoint}`;
-            const auth = Buffer.from(`${this.options.username}:${this.options.password}`).toString('base64');
-
-            const response = await axios.post(url, data, {
-                headers: {
-                    'Authorization': `Basic ${auth}`,
-                    'Content-Type': 'application/json'
-                },
-                timeout: 5000 // 5 second timeout
-            });
-
-            return response.data;
-        } catch (error) {
-            this.logger.error(`Error posting to RabbitMQ (${endpoint}):`, error.message);
-            throw error;
         }
     }
 
@@ -711,7 +584,7 @@ class RabbitMQAdmin {
         }
 
         this.io = socketIo(this.server, {
-            path: `${this.options.basePath}socket.io`.replace(/\/+/g, '/'),
+            path: `${this.config.basePath}socket.io`.replace(/\/+/g, '/'),
             cors: {
                 origin: '*',
                 methods: ['GET', 'POST']
@@ -724,8 +597,8 @@ class RabbitMQAdmin {
 
             // Send initial connection status
             socket.emit('connection-status', {
-                http: true,
-                amqp: !!this.amqpChannel,
+                http: this.httpConnected,
+                amqp: this.isAmqpConnected(),
                 timestamp: new Date().toISOString()
             });
 
@@ -764,8 +637,8 @@ class RabbitMQAdmin {
                 ]);
 
                 // If we have an AMQP connection, enhance the queue data
-                if (this.amqpChannel) {
-                    await this.enhanceQueuesWithAmqpData(queues);
+                if (this.isAmqpConnected()) {
+                    await this._enhanceQueuesWithAmqpData(queues);
                 }
 
                 // Send to client
@@ -774,19 +647,18 @@ class RabbitMQAdmin {
                     queues,
                     exchanges,
                     connectionStatus: {
-                        http: true,
-                        amqp: !!this.amqpChannel,
+                        http: this.httpConnected,
+                        amqp: this.isAmqpConnected(),
                         timestamp: new Date().toISOString()
                     }
                 });
             } catch (error) {
-                this.logger.error('Error sending RabbitMQ updates:', error.message);
-
+                // Send error to client
                 socket.emit('rabbitmq-error', {
                     message: error.message,
                     connectionStatus: {
-                        http: false,
-                        amqp: !!this.amqpChannel,
+                        http: this.httpConnected,
+                        amqp: this.isAmqpConnected(),
                         timestamp: new Date().toISOString()
                     }
                 });
@@ -794,36 +666,78 @@ class RabbitMQAdmin {
         };
 
         // Initial data
-        sendUpdates().catch(err => {
-            this.logger.error('Error sending initial update:', err.message);
-        });
+        sendUpdates().catch(() => { });
 
         // Set up interval for regular updates
         const intervalId = setInterval(() => {
-            sendUpdates().catch(err => {
-                this.logger.error('Error sending periodic update:', err.message);
-            });
-        }, this.options.refreshInterval);
+            sendUpdates().catch(() => { });
+        }, this.config.refreshInterval);
 
         // Store interval ID for cleanup
         this.updateIntervals.set(socket.id, intervalId);
     }
 
     /**
-     * Broadcast connection status to all connected clients
-     * @param {boolean} connected - Whether connection is active
-     * @param {string} message - Optional status message
-     * @private
+     * Create a standalone server
+     * @param {number} port - Port to listen on
+     * @returns {Promise<Object>} Object containing app and server
      */
-    _broadcastConnectionStatus(connected = true, message = '') {
-        if (this.io) {
-            this.io.emit('connection-status', {
-                http: true,
-                amqp: connected,
-                message,
-                timestamp: new Date().toISOString()
-            });
-        }
+    async createServer(port = 3000) {
+        const actualPort = parseInt(port, 10) || 3000;
+
+        // Create a new Express application
+        this.app = express();
+
+        // Configure Handlebars view engine
+        this._setupHandlebars(this.app);
+
+        // Security headers
+        this.app.use((req, res, next) => {
+            res.setHeader('X-Content-Type-Options', 'nosniff');
+            res.setHeader('X-Frame-Options', 'SAMEORIGIN');
+            res.setHeader('X-XSS-Protection', '1; mode=block');
+            next();
+        });
+
+        // Mount the router
+        this.app.use(this.config.basePath, this.router);
+
+        // Add 404 handler for unmatched routes
+        this.app.use((req, res) => {
+            res.status(404).json({ error: 'Not Found' });
+        });
+
+        // Create HTTP server
+        this.server = http.createServer(this.app);
+
+        // Initialize connections
+        await this.initialize();
+
+        // Setup WebSockets
+        this.setupWebsockets();
+
+        // Start server
+        return new Promise((resolve, reject) => {
+            try {
+                const serverInstance = this.server.listen(actualPort, () => {
+                    const address = serverInstance.address();
+                    const host = address.address === '::' ? 'localhost' : address.address;
+                    const port = address.port;
+
+                    this.logger.info(`RabbitMQ Dashboard running at http://${host}:${port}${this.config.basePath}`);
+                    resolve({
+                        app: this.app,
+                        server: this.server
+                    });
+                });
+
+                this.server.on('error', (err) => {
+                    reject(err);
+                });
+            } catch (error) {
+                reject(error);
+            }
+        });
     }
 
     /**
@@ -842,8 +756,11 @@ class RabbitMQAdmin {
         // Configure Handlebars view engine
         this._setupHandlebars(app);
 
+        // Initialize connections
+        await this.initialize();
+
         // Mount the router
-        this.app.use(this.options.basePath, this.router);
+        this.app.use(this.config.basePath, this.router);
 
         // Setup WebSockets if server is provided
         if (appServer) {
@@ -851,113 +768,18 @@ class RabbitMQAdmin {
             this.setupWebsockets();
         }
 
-        // Connect to RabbitMQ via AMQP (don't await to prevent blocking)
-        this.connect().catch(err => {
-            this.logger.warn('Initial RabbitMQ connection failed, will retry in background:', err.message);
-        });
-
         return this.router;
     }
 
     /**
-     * Create a standalone server
-     * @param {number} port - Port to listen on
-     * @returns {Promise<Object>} Object containing app and server
-     */
-    async createServer(port = 3000) {
-        const actualPort = parseInt(port, 10) || 3000;
-
-        // Create a new Express application
-        this.app = express();
-
-        // Configure Handlebars view engine
-        this._setupHandlebars(this.app);
-
-        // Additional security headers
-        this.app.use((req, res, next) => {
-            res.setHeader('X-Content-Type-Options', 'nosniff');
-            res.setHeader('X-Frame-Options', 'SAMEORIGIN');
-            res.setHeader('X-XSS-Protection', '1; mode=block');
-            next();
-        });
-
-        // Mount the router
-        this.app.use(this.options.basePath, this.router);
-
-        // Add 404 handler for unmatched routes
-        this.app.use((req, res) => {
-            res.status(404).json({ error: 'Not Found' });
-        });
-
-        // Create HTTP server
-        this.server = http.createServer(this.app);
-
-        // Monitor server events
-        this.server.on('error', (err) => {
-            this.logger.error('HTTP server error:', err.message);
-        });
-
-        // Setup WebSockets
-        this.setupWebsockets();
-
-        // Connect to RabbitMQ via AMQP (don't await to prevent blocking)
-        this.connect().catch(err => {
-            this.logger.warn('Initial RabbitMQ connection failed, will retry in background:', err.message);
-        });
-
-        // Start server
-        return new Promise((resolve, reject) => {
-            try {
-                const serverInstance = this.server.listen(actualPort, () => {
-                    const address = serverInstance.address();
-                    const host = address.address === '::' ? 'localhost' : address.address;
-                    const port = address.port;
-
-                    this.logger.info(`RabbitMQ Board running at http://${host}:${port}${this.options.basePath}`);
-                    resolve({
-                        app: this.app,
-                        server: this.server
-                    });
-                });
-
-                this.server.on('error', (err) => {
-                    if (err.code === 'EADDRINUSE') {
-                        this.logger.error(`Port ${actualPort} is already in use`);
-                    } else {
-                        this.logger.error(`Server error: ${err.message}`);
-                    }
-                    reject(err);
-                });
-            } catch (error) {
-                this.logger.error('Failed to start server:', error);
-                reject(error);
-            }
-        });
-    }
-
-    /**
      * Graceful shutdown of all connections and server
-     * @param {number} timeout - Maximum time to wait for graceful shutdown in ms
      * @returns {Promise<void>}
      */
-    async shutdown(timeout = 10000) {
-        this.logger.info('Shutting down RabbitMQ Board...');
-
-        // Create a promise that will resolve after the timeout
-        const timeoutPromise = new Promise(resolve => {
-            setTimeout(() => {
-                this.logger.warn(`Shutdown timed out after ${timeout}ms`);
-                resolve();
-            }, timeout);
-        });
-
-        // Create shutdown promises
-        const shutdownPromises = [];
+    async shutdown() {
+        this.logger.info('Shutting down RabbitMQ Dashboard...');
 
         // Close WebSocket connections
         if (this.io) {
-            this.logger.debug('Closing WebSocket connections...');
-
             // Notify clients that server is shutting down
             this.io.emit('server-shutdown', { message: 'Server shutting down' });
 
@@ -976,32 +798,36 @@ class RabbitMQAdmin {
             this.updateIntervals.clear();
 
             // Close IO server
-            shutdownPromises.push(new Promise(resolve => {
-                this.io.close(() => {
-                    this.logger.debug('WebSocket server closed');
-                    resolve();
-                });
-            }));
+            await new Promise(resolve => {
+                this.io.close(() => resolve());
+            });
         }
 
         // Close AMQP connection
-        shutdownPromises.push(this.closeConnection());
+        if (this.amqpChannel) {
+            try {
+                await this.amqpChannel.close();
+            } catch (e) {
+                // Ignore errors
+            }
+            this.amqpChannel = null;
+        }
+
+        if (this.amqpConnection) {
+            try {
+                await this.amqpConnection.close();
+            } catch (e) {
+                // Ignore errors
+            }
+            this.amqpConnection = null;
+        }
 
         // Close HTTP server if it exists
         if (this.server) {
-            shutdownPromises.push(new Promise(resolve => {
-                this.server.close(() => {
-                    this.logger.info('HTTP server closed');
-                    resolve();
-                });
-            }));
+            await new Promise(resolve => {
+                this.server.close(() => resolve());
+            });
         }
-
-        // Wait for all shutdowns or timeout
-        await Promise.race([
-            Promise.all(shutdownPromises),
-            timeoutPromise
-        ]);
 
         this.logger.info('Shutdown complete');
     }

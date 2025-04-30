@@ -2,6 +2,12 @@ FROM node:20-alpine
 
 WORKDIR /app
 
+# Install necessary utilities for health check and SSL
+RUN apk add --no-cache wget ca-certificates openssl
+
+# Create certs directory for optional mounted certificates
+RUN mkdir -p /app/certs
+
 # Install dependencies
 COPY package.json package-lock.json* ./
 RUN npm install --production

@@ -1,7 +1,6 @@
 // src/lib/Logger.js
-// Logging utilities for RMQ Board
+// Ultra-simplified logging utilities with deduplication support
 const winston = require('winston');
-const path = require('path');
 
 /**
  * Create a configured logger instance
@@ -12,26 +11,85 @@ function createLogger(options = {}) {
     const {
         level = process.env.LOG_LEVEL || 'info',
         console = true,
-        file = true,
-        filename = 'rmq-board.log'
+        file = false,
+        filename = 'rabbitmq-dashboard.log',
+        dedupeInterval = 1000, // 1 second deduplication window
+        silent = false
     } = options;
 
     // Configure transports
     const transports = [];
 
+    // Custom format that includes message deduplication
+    const messageCache = new Map();
+
+    // Create a format that handles deduplication
+    const dedupeFormat = winston.format((info) => {
+        // Create a cache key from level and message
+        const cacheKey = `${info.level}:${info.message}`;
+        const now = Date.now();
+
+        // Check if we've seen this message recently
+        if (messageCache.has(cacheKey)) {
+            const lastSeen = messageCache.get(cacheKey);
+            if (now - lastSeen < dedupeInterval) {
+                // Skip duplicates within the deduplication window
+                return false;
+            }
+        }
+
+        // Update the cache with the current timestamp
+        messageCache.set(cacheKey, now);
+
+        // Clean old entries from the cache periodically
+        if (messageCache.size > 1000) {
+            // Clear entries older than dedupeInterval
+            for (const [key, timestamp] of messageCache.entries()) {
+                if (now - timestamp > dedupeInterval) {
+                    messageCache.delete(key);
+                }
+            }
+        }
+
+        return info;
+    });
+
+    // Format for console output
+    const consoleFormat = winston.format.combine(
+        dedupeFormat(),
+        winston.format.colorize(),
+        winston.format.timestamp({ format: 'YYYY-MM-DD HH:mm:ss' }),
+        winston.format.printf(({ level, message, timestamp, ...meta }) => {
+            // Nicer meta formatting
+            let metaStr = '';
+
+            // Handle module metadata specially
+            if (Object.keys(meta).length > 0) {
+                if (meta.module) {
+                    metaStr += ` [${meta.module}]`;
+                    delete meta.module;
+                }
+
+                // Format the remaining metadata if any exists
+                if (Object.keys(meta).length > 0) {
+                    try {
+                        metaStr += ' ' + JSON.stringify(meta, null, 1)
+                            .replace(/\n\s*/g, ' ')  // Remove newlines for cleaner output
+                            .replace(/,\s+/g, ', '); // Clean up spacing
+                    } catch (e) {
+                        metaStr += ' [Error formatting metadata]';
+                    }
+                }
+            }
+
+            return `${timestamp} ${level}: ${message}${metaStr}`;
+        })
+    );
+
     // Add console transport if enabled
     if (console) {
         transports.push(new winston.transports.Console({
-            format: winston.format.combine(
-                winston.format.colorize(),
-                winston.format.timestamp(),
-                winston.format.printf(({ level, message, timestamp, ...meta }) => {
-                    const metaStr = Object.keys(meta).length
-                        ? `\n${JSON.stringify(meta, null, 2)}`
-                        : '';
-                    return `${timestamp} ${level}: ${message}${metaStr}`;
-                })
-            )
+            format: consoleFormat
         }));
     }
 
@@ -40,36 +98,60 @@ function createLogger(options = {}) {
         transports.push(new winston.transports.File({
             filename,
             format: winston.format.combine(
+                dedupeFormat(),
                 winston.format.timestamp(),
                 winston.format.json()
             )
         }));
     }
 
-    // Create and return logger
-    return winston.createLogger({
+    // Create the logger
+    const logger = winston.createLogger({
         level,
         levels: winston.config.npm.levels,
         transports,
+        silent,
         exitOnError: false
     });
+
+    // Add a masking helper to the logger
+    logger.maskUrl = (url) => {
+        if (!url) return 'undefined-url';
+        return url.replace(/(\/\/[^:]+:)([^@]+)(@)/, '$1***$3');
+    };
+
+    // Add a method to create child loggers
+    logger.child = (meta) => {
+        return createChildLogger(logger, meta);
+    };
+
+    return logger;
 }
 
 /**
  * Create a child logger with a specific context
  * @param {winston.Logger} logger - Parent logger
- * @param {string} moduleName - Module name for context
+ * @param {string|Object} meta - Module name or metadata object
  * @returns {winston.Logger} Child logger with context
  */
-function createChildLogger(logger, moduleName) {
+function createChildLogger(logger, meta) {
     // If no parent logger, create a new one
     if (!logger) {
         logger = createLogger();
     }
 
-    return logger.child({
-        module: moduleName
-    });
+    // Convert string module name to object
+    if (typeof meta === 'string') {
+        meta = { module: meta };
+    }
+
+    // Create child logger with merged metadata
+    const childLogger = logger.child(meta);
+
+    // Make sure maskUrl is available on child loggers
+    childLogger.maskUrl = logger.maskUrl;
+
+    return childLogger;
 }
 
 module.exports = {

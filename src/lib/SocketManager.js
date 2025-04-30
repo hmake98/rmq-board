@@ -1,5 +1,5 @@
 // src/lib/SocketManager.js
-// WebSocket management for real-time updates
+// Ultra-simplified WebSocket management for real-time updates
 const socketIo = require('socket.io');
 const EventEmitter = require('events');
 
@@ -11,7 +11,7 @@ class SocketManager extends EventEmitter {
     /**
      * Create a new SocketManager
      * @param {Object} server - HTTP server instance
-     * @param {Object} config - Configuration options
+     * @param {Object} config - Configuration object from loadConfig()
      * @param {Object} logger - Logger instance
      */
     constructor(server, config, logger) {
@@ -36,14 +36,19 @@ class SocketManager extends EventEmitter {
      * Initialize socket.io and set up event handlers
      */
     init() {
+        // Make sure basePath for socket.io is correctly formatted
+        const socketPath = `${this.config.basePath}socket.io`.replace(/\/+/g, '/');
+
+        // Initialize socket.io with proper configuration
         this.io = socketIo(this.server, {
-            path: `${this.config.basePath}socket.io`, // Ensure path works with basePath
+            path: socketPath,
             cors: {
                 origin: '*',
                 methods: ['GET', 'POST']
             }
         });
 
+        // Set up connection handler
         this.io.on('connection', this.handleConnection.bind(this));
 
         this.logger.info('WebSocket server initialized');
@@ -131,17 +136,28 @@ class SocketManager extends EventEmitter {
      */
     async sendUpdate(socket, eventName, dataProvider) {
         try {
+            // Make sure socket is still connected
+            if (!socket.connected) {
+                this.logger.debug(`Socket ${socket.id} disconnected, skipping update`);
+                return;
+            }
+
+            // Get data and send to client
             const data = await dataProvider();
             socket.emit(eventName, {
                 ...data,
                 timestamp: new Date().toISOString()
             });
         } catch (error) {
-            this.logger.error(`Error sending ${eventName} update:`, error.message);
-            socket.emit('error', {
-                message: `Failed to update ${eventName}: ${error.message}`,
-                timestamp: new Date().toISOString()
-            });
+            this.logger.error(`Error sending ${eventName} update: ${error.message}`);
+
+            // Only send error if socket is connected
+            if (socket.connected) {
+                socket.emit('error', {
+                    message: `Failed to update ${eventName}: ${error.message}`,
+                    timestamp: new Date().toISOString()
+                });
+            }
         }
     }
 

@@ -1,17 +1,16 @@
 // src/lib/AmqpClient.js
-// AMQP Connection management
+// Ultra-simplified AMQP client using a single RABBITMQ_URL
 const amqp = require('amqplib');
 const EventEmitter = require('events');
-const { buildAmqpConnectionString } = require('../utils/config');
 
 /**
- * AmqpClient class for managing RabbitMQ AMQP connections
+ * AmqpClient class for connecting to RabbitMQ via AMQP
  * @extends EventEmitter
  */
 class AmqpClient extends EventEmitter {
     /**
      * Create a new AmqpClient
-     * @param {Object} config - Configuration options
+     * @param {Object} config - Configuration from loadConfig()
      * @param {Object} logger - Logger instance
      */
     constructor(config, logger) {
@@ -44,11 +43,29 @@ class AmqpClient extends EventEmitter {
         this.isConnecting = true;
 
         try {
-            // Build connection string with credentials
-            const amqpConnectionString = buildAmqpConnectionString(this.config);
+            // The AMQP URL is already set in config with credentials and vhost
+            const amqpUrl = this.config.amqpUrl;
 
-            this.logger.info('Connecting to RabbitMQ via AMQP...');
-            this.connection = await amqp.connect(amqpConnectionString);
+            // Set up connection options for SSL if needed
+            const options = {};
+
+            if (this.config.sslEnabled) {
+                options.tls = {
+                    rejectUnauthorized: this.config.sslVerify
+                };
+
+                // For AWS MQ, disable hostname verification
+                if (this.config.isAwsMq) {
+                    options.tls.checkServerIdentity = () => undefined;
+                }
+            }
+
+            // Log connection attempt (with masked password)
+            const maskedUrl = amqpUrl.replace(/(\/\/[^:]+:)([^@]+)(@)/, '$1***$3');
+            this.logger.info(`Connecting to RabbitMQ via AMQP: ${maskedUrl}`);
+
+            // Connect using the direct AMQP URL
+            this.connection = await amqp.connect(amqpUrl, options);
             this.channel = await this.connection.createChannel();
 
             // Reset retry counter on successful connection
@@ -57,7 +74,7 @@ class AmqpClient extends EventEmitter {
 
             // Set up connection event handlers
             this.connection.on('error', (err) => {
-                this.logger.error('AMQP connection error:', err.message);
+                this.logger.error(`AMQP connection error: ${err.message}`);
                 this.emit('error', err);
                 this.reconnect();
             });
@@ -77,7 +94,15 @@ class AmqpClient extends EventEmitter {
             return true;
         } catch (error) {
             this.isConnecting = false;
-            this.logger.error('Failed to connect to RabbitMQ via AMQP:', error.message);
+            this.logger.error(`Failed to connect to RabbitMQ via AMQP: ${error.message}`);
+
+            // For AWS MQ, provide specific troubleshooting help
+            if (this.config.isAwsMq) {
+                this.logger.warn('AWS MQ connection failed. Check:');
+                this.logger.warn('1. Security group allows access to port 5671');
+                this.logger.warn('2. Try setting SSL_VERIFY=false in your .env file');
+            }
+
             this.emit('error', error);
             this.reconnect();
             return false;
@@ -157,7 +182,7 @@ class AmqpClient extends EventEmitter {
                 await this.channel.close();
                 this.logger.debug('AMQP channel closed');
             } catch (e) {
-                this.logger.warn('Error closing AMQP channel:', e.message);
+                this.logger.warn(`Error closing AMQP channel: ${e.message}`);
             } finally {
                 this.channel = null;
             }
@@ -169,7 +194,7 @@ class AmqpClient extends EventEmitter {
                 await this.connection.close();
                 this.logger.debug('AMQP connection closed');
             } catch (e) {
-                this.logger.warn('Error closing AMQP connection:', e.message);
+                this.logger.warn(`Error closing AMQP connection: ${e.message}`);
             } finally {
                 this.connection = null;
             }

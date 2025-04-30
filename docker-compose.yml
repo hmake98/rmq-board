@@ -31,15 +31,23 @@ services:
     ports:
       - "3000:3000"
     environment:
+      # Basic connection settings
       - RABBITMQ_URL=http://rabbitmq:15672
       - RABBITMQ_AMQP_URL=amqp://rabbitmq:5672
       - RABBITMQ_USERNAME=guest
       - RABBITMQ_PASSWORD=guest
+      - RABBITMQ_VHOST=/
+
+      # SSL/TLS settings (disabled by default for local setup)
+      - RABBITMQ_SSL_ENABLED=false
+
+      # Application settings
       - REFRESH_INTERVAL=5000
       - BASE_PATH=/
       - PORT=3000
       - MAX_RETRIES=5
       - RETRY_TIMEOUT=3000
+      - LOG_LEVEL=info
     depends_on:
       rabbitmq:
         condition: service_healthy

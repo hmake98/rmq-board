@@ -1,7 +1,8 @@
 // src/lib/HttpClient.js
-// HTTP Client for RabbitMQ Management API
+// Ultra-simplified HTTP Client for RabbitMQ Management API using single RABBITMQ_URL
 const axios = require('axios');
 const EventEmitter = require('events');
+const https = require('https');
 
 /**
  * HttpClient class for RabbitMQ Management API
@@ -10,7 +11,7 @@ const EventEmitter = require('events');
 class HttpClient extends EventEmitter {
     /**
      * Create a new HttpClient
-     * @param {Object} config - Configuration options
+     * @param {Object} config - Configuration options from loadConfig()
      * @param {Object} logger - Logger instance
      */
     constructor(config, logger) {
@@ -18,9 +19,6 @@ class HttpClient extends EventEmitter {
 
         this.config = config;
         this.logger = logger;
-        this.baseUrl = config.rabbitMQUrl;
-        this.username = config.username;
-        this.password = config.password;
 
         // Cache for performance
         this.cache = {
@@ -29,18 +27,67 @@ class HttpClient extends EventEmitter {
         };
 
         // Set up axios client with default config
-        this.client = axios.create({
-            baseURL: this.baseUrl,
-            timeout: 5000, // 5 second timeout
+        this.setupClient();
+    }
+
+    /**
+     * Set up the HTTP client with proper configuration
+     */
+    setupClient() {
+        // Create client options
+        const clientOptions = {
+            baseURL: this.config.rabbitMQUrl,
+            timeout: this.config.isAwsMq ? 30000 : 10000, // Longer timeout for AWS MQ
+            auth: {
+                username: this.config.username,
+                password: this.config.password
+            },
             headers: {
-                'Content-Type': 'application/json',
-                'Authorization': `Basic ${Buffer.from(`${this.username}:${this.password}`).toString('base64')}`
+                'Content-Type': 'application/json'
+            },
+            validateStatus: null // Handle status in interceptor
+        };
+
+        // Add HTTPS agent if SSL is enabled
+        if (this.config.sslEnabled) {
+            const httpsAgent = new https.Agent({
+                rejectUnauthorized: this.config.sslVerify,
+                // For AWS MQ, disable hostname verification
+                checkServerIdentity: this.config.isAwsMq ? () => undefined : undefined
+            });
+            clientOptions.httpsAgent = httpsAgent;
+
+            if (this.config.isAwsMq) {
+                this.logger.debug('AWS MQ detected, adjusted SSL settings for HTTP client');
             }
-        });
+        }
+
+        // Mask password in URL for logging
+        const maskedUrl = this.config.rabbitMQUrl.replace(/(\/\/[^:]+:)([^@]+)(@)/, '$1***$3');
+        this.logger.info(`HTTP client initialized for ${maskedUrl}`);
+
+        // Create axios client
+        this.client = axios.create(clientOptions);
 
         // Add response interceptor for error handling
         this.client.interceptors.response.use(
-            response => response,
+            response => {
+                // Only consider 2xx responses as successful
+                if (response.status >= 200 && response.status < 300) {
+                    return response;
+                }
+
+                // For AWS MQ, check for specific status codes
+                if (this.config.isAwsMq && response.status === 401) {
+                    this.logger.warn('Received 401 from AWS MQ, port may be incorrect. Try port 443 instead.');
+                }
+
+                // Handle unsuccessful responses
+                this.handleApiError({ response });
+
+                // Convert to a rejected promise for unsuccessful responses
+                return Promise.reject(new Error(`Status ${response.status}: ${response.statusText}`));
+            },
             error => {
                 this.handleApiError(error);
                 return Promise.reject(error);
@@ -56,11 +103,7 @@ class HttpClient extends EventEmitter {
     handleApiError(error) {
         if (error.response) {
             // Server responded with an error status
-            this.logger.error(`API Error ${error.response.status}: ${error.response.statusText}`, {
-                url: error.config.url,
-                method: error.config.method,
-                data: error.response.data
-            });
+            this.logger.error(`API Error ${error.response.status}: ${error.response.statusText}`);
 
             // Emit event based on status code
             if (error.response.status === 401) {
@@ -70,16 +113,18 @@ class HttpClient extends EventEmitter {
             }
         } else if (error.request) {
             // Request was made but no response received
-            this.logger.error('API No Response Error:', {
-                url: error.config.url,
-                method: error.config.method,
-                message: error.message
-            });
-
+            this.logger.error(`API No Response Error: ${error.message}`);
             this.emit('connection-error', error);
+
+            // For connection issues to cloud brokers, provide specific tips
+            if (this.config.isAwsMq) {
+                this.logger.warn('Connection to AWS MQ failed. Check:');
+                this.logger.warn('1. Security group allows access to management port (443)');
+                this.logger.warn('2. Try setting SSL_VERIFY=false in your .env file');
+            }
         } else {
             // Error in setting up the request
-            this.logger.error('API Request Setup Error:', error.message);
+            this.logger.error(`API Request Setup Error: ${error.message}`);
         }
     }
 
@@ -189,9 +234,29 @@ class HttpClient extends EventEmitter {
      */
     async checkConnection() {
         try {
-            await this.client.get('/api/overview', { timeout: 2000 });
-            this.emit('connected');
-            return true;
+            // Try endpoints in order - for AWS MQ we may need to try alternatives
+            const endpoints = ['/api/overview'];
+
+            // For AWS MQ, also try root endpoint
+            if (this.config.isAwsMq) {
+                endpoints.push('/');  // AWS MQ sometimes uses root endpoint
+            }
+
+            // Try each endpoint in order until one works
+            for (const endpoint of endpoints) {
+                try {
+                    await this.client.get(endpoint, { timeout: 5000 });
+                    this.logger.debug(`Connection successful using endpoint: ${endpoint}`);
+                    this.emit('connected');
+                    return true;
+                } catch (error) {
+                    this.logger.debug(`Endpoint ${endpoint} failed, trying next if available`);
+                    // Continue to next endpoint
+                }
+            }
+
+            // If we get here, all endpoints failed
+            throw new Error('All API endpoints failed');
         } catch (error) {
             this.emit('connection-error', error);
             return false;
