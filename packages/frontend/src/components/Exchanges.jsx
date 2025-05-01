@@ -16,7 +16,7 @@ import {
   ReloadOutlined,
   SendOutlined,
 } from "@ant-design/icons";
-import axios from "axios";
+import api from "../services/api"; // Import the API service
 import { useSocket } from "../context/SocketContext";
 import { useNavigate } from "react-router-dom";
 
@@ -36,7 +36,7 @@ const Exchanges = () => {
   const fetchExchanges = async () => {
     setLoading(true);
     try {
-      const response = await axios.get("/api/exchanges");
+      const response = await api.getExchanges(); // Use the API service instead of direct axios call
       setExchanges(response.data);
       filterExchanges(response.data, searchText);
       setLastUpdated(new Date());
