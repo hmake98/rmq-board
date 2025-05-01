@@ -23,13 +23,13 @@ services:
       start_period: 15s
     restart: unless-stopped
 
-  rmq-board:
+  backend:
     build:
       context: .
-      dockerfile: Dockerfile
-    container_name: rmq-board
+      dockerfile: Dockerfile.backend
+    container_name: rmq-board-backend
     ports:
-      - "3000:3000"
+      - "3001:3001"
     environment:
       # Basic connection settings
       - RABBITMQ_URL=http://rabbitmq:15672
@@ -43,8 +43,8 @@ services:
 
       # Application settings
       - REFRESH_INTERVAL=5000
-      - BASE_PATH=/
-      - PORT=3000
+      - BASE_PATH=/api/
+      - PORT=3001
       - MAX_RETRIES=5
       - RETRY_TIMEOUT=3000
       - LOG_LEVEL=info
@@ -61,12 +61,25 @@ services:
           "--no-verbose",
           "--tries=1",
           "--spider",
-          "http://localhost:3000/api/health",
+          "http://localhost:3001/api/health",
         ]
       interval: 10s
       timeout: 5s
       retries: 3
       start_period: 10s
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+    container_name: rmq-board-frontend
+    ports:
+      - "3000:80"
+    depends_on:
+      - backend
+    networks:
+      - rmq_network
     restart: unless-stopped
 
 networks:

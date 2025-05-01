@@ -1,0 +1,28 @@
+FROM node:20-alpine
+
+WORKDIR /app
+
+# Install necessary utilities for health check and SSL
+RUN apk add --no-cache wget ca-certificates openssl
+
+# Create certs directory for optional mounted certificates
+RUN mkdir -p /app/certs
+
+# Copy package.json files for all workspaces
+COPY package.json lerna.json ./
+COPY packages/backend/package.json ./packages/backend/
+
+# Install dependencies
+RUN npm install --production
+
+# Copy backend application files
+COPY packages/backend/ ./packages/backend/
+
+# Expose the port the app runs on
+EXPOSE 3001
+
+# Set working directory to backend
+WORKDIR /app/packages/backend
+
+# Command to run the application
+CMD ["node", "server.js"]
