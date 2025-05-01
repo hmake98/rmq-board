@@ -1,0 +1,23 @@
+{
+  "version": "1.0.0",
+  "npmClient": "npm",
+  "packages": [
+    "packages/*"
+  ],
+  "command": {
+    "bootstrap": {
+      "nohoist": [
+        "ajv"
+      ],
+      "npmClientArgs": [
+        "--no-package-lock"
+      ]
+    },
+    "publish": {
+      "conventionalCommits": true,
+      "message": "chore(release): publish %s"
+    }
+  },
+  "stream": true,
+  "$schema": "node_modules/lerna/schemas/lerna-schema.json"
+}
