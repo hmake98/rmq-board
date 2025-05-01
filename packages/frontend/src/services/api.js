@@ -1,5 +1,8 @@
 import axios from 'axios';
 
+// Get API base URL from environment variables or use default
+// const API_BASE_URL = import.meta.env.VITE_API_URL || '/api';
+
 // Create an axios instance with common configuration
 const api = axios.create({
   baseURL: '/api',
@@ -9,12 +12,37 @@ const api = axios.create({
   }
 });
 
+// Request interceptor to add auth if needed
+api.interceptors.request.use(
+  config => {
+    // You can add authentication headers here if needed
+    return config;
+  },
+  error => {
+    return Promise.reject(error);
+  }
+);
+
 // Response interceptor for error handling
 api.interceptors.response.use(
   response => response,
   error => {
     // Log errors for debugging
-    console.error('API Error:', error.response || error.message);
+    if (error.response) {
+      // The request was made and the server responded with a status code
+      // outside of the range of 2xx
+      console.error('API Error:', {
+        status: error.response.status,
+        data: error.response.data,
+        headers: error.response.headers
+      });
+    } else if (error.request) {
+      // The request was made but no response was received
+      console.error('API Error: No response received', error.request);
+    } else {
+      // Something happened in setting up the request that triggered an Error
+      console.error('API Error:', error.message);
+    }
 
     // Propagate error for component-level handling
     return Promise.reject(error);
@@ -44,7 +72,28 @@ const endpoints = {
   getBindings: () => api.get('/bindings'),
 
   // Health check
-  getHealth: () => api.get('/health')
+  getHealth: () => api.get('/health'),
+
+  // Helper method to handle common error patterns
+  handleRequestError: (error) => {
+    let errorMessage = 'An error occurred while connecting to the server';
+
+    if (error.response) {
+      // Server responded with error
+      errorMessage = error.response.data?.error ||
+        error.response.data?.message ||
+        `Server error: ${error.response.status}`;
+    } else if (error.request) {
+      // No response received
+      errorMessage = 'No response from server. Please check your connection.';
+    }
+
+    return {
+      error: true,
+      message: errorMessage,
+      details: error.response?.data || error.message
+    };
+  }
 };
 
 export default endpoints;

@@ -2,6 +2,7 @@
   "name": "rmq-board-monorepo",
   "version": "1.0.0",
   "private": true,
+  "description": "A modern admin UI for RabbitMQ with real-time updates and direct AMQP support",
   "workspaces": [
     "packages/*"
   ],
@@ -12,13 +13,46 @@
     "dev": "lerna run dev --stream --parallel",
     "build": "lerna run build --stream",
     "test": "lerna run test --stream",
+    "lint": "lerna run lint --stream --parallel",
     "backend": "lerna run start --scope=@rmq-board/backend --stream",
-    "frontend": "lerna run start --scope=@rmq-board/frontend --stream"
+    "frontend": "lerna run start --scope=@rmq-board/frontend --stream",
+    "docker:build": "docker-compose build",
+    "docker:up": "docker-compose up -d",
+    "docker:down": "docker-compose down",
+    "docker:logs": "docker-compose logs -f",
+    "prepare": "if [ -z \"$DOCKER_BUILD\" ]; then husky install || true; fi"
   },
   "devDependencies": {
-    "lerna": "^7.2.0"
+    "husky": "^8.0.3",
+    "lerna": "^7.2.0",
+    "lint-staged": "^13.2.3",
+    "prettier": "^2.8.8"
   },
   "engines": {
-    "node": ">=14.0.0"
+    "node": ">=16.0.0",
+    "npm": ">=8.0.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/yourusername/rmq-board.git"
+  },
+  "keywords": [
+    "rabbitmq",
+    "admin",
+    "dashboard",
+    "amqp",
+    "message-queue",
+    "monitoring"
+  ],
+  "author": "",
+  "license": "MIT",
+  "lint-staged": {
+    "*.{js,jsx}": [
+      "prettier --write",
+      "eslint --fix"
+    ],
+    "*.json": [
+      "prettier --write"
+    ]
   }
 }

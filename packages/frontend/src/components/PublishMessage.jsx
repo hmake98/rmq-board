@@ -1,15 +1,30 @@
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect } from "react";
 import {
-  Form, Input, Button, Select, Card, Alert, Space, Typography,
-  Divider, Switch, Row, Col, Tooltip, notification
-} from 'antd';
+  Form,
+  Input,
+  Button,
+  Select,
+  Card,
+  Alert,
+  Space,
+  Typography,
+  Divider,
+  Switch,
+  Row,
+  Col,
+  Tooltip,
+  notification,
+} from "antd";
 import {
-  SendOutlined, InfoCircleOutlined, CodeOutlined,
-  CheckCircleOutlined, QuestionCircleOutlined
-} from '@ant-design/icons';
-import axios from 'axios';
-import { useLocation } from 'react-router-dom';
-import JSONEditor from './JSONEditor';
+  SendOutlined,
+  InfoCircleOutlined,
+  CodeOutlined,
+  CheckCircleOutlined,
+  QuestionCircleOutlined,
+} from "@ant-design/icons";
+import api from "../services/api"; // Import the API service
+import { useLocation } from "react-router-dom";
+import JSONEditor from "./JSONEditor";
 
 const { Text } = Typography;
 const { Option } = Select;
@@ -22,7 +37,9 @@ const PublishMessage = () => {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState(null);
   const [useJsonEditor, setUseJsonEditor] = useState(true);
-  const [jsonContent, setJsonContent] = useState('{\n  "message": "Hello, World!"\n}');
+  const [jsonContent, setJsonContent] = useState(
+    '{\n  "message": "Hello, World!"\n}'
+  );
   const [jsonValid, setJsonValid] = useState(true);
   const [selectedExchangeType, setSelectedExchangeType] = useState(null);
 
@@ -47,18 +64,18 @@ const PublishMessage = () => {
   const fetchExchanges = async () => {
     setLoading(true);
     try {
-      const response = await axios.get('/api/exchanges');
+      const response = await api.getExchanges(); // Use the API service instead of direct axios call
 
       // Group exchanges by vhost
       const exchangesByVhost = {};
 
-      response.data.forEach(exchange => {
+      response.data.forEach((exchange) => {
         // Skip the default exchange (empty name)
-        if (exchange.name === '') return;
+        if (exchange.name === "") return;
         // Skip internal exchanges
         if (exchange.internal) return;
 
-        const vhost = exchange.vhost || '/';
+        const vhost = exchange.vhost || "/";
 
         if (!exchangesByVhost[vhost]) {
           exchangesByVhost[vhost] = [];
@@ -70,8 +87,8 @@ const PublishMessage = () => {
       setExchanges(exchangesByVhost);
       setError(null);
     } catch (error) {
-      console.error('Error fetching exchanges:', error);
-      setError('Failed to fetch exchanges. Please check your connection.');
+      console.error("Error fetching exchanges:", error);
+      setError("Failed to fetch exchanges. Please check your connection.");
     } finally {
       setLoading(false);
     }
@@ -85,19 +102,21 @@ const PublishMessage = () => {
     }
 
     // Value is formatted as "vhost|name"
-    const [vhost, name] = value.split('|');
+    const [vhost, name] = value.split("|");
 
     // Find exchange type
     for (const vhostKey in exchanges) {
       const exchangeList = exchanges[vhostKey];
-      const exchange = exchangeList.find(e => e.name === name && e.vhost === vhost);
+      const exchange = exchangeList.find(
+        (e) => e.name === name && e.vhost === vhost
+      );
 
       if (exchange) {
         setSelectedExchangeType(exchange.type);
 
         // For topic exchanges, provide a helpful default routing key
-        if (exchange.type === 'topic' && !form.getFieldValue('routingKey')) {
-          form.setFieldsValue({ routingKey: '#' });
+        if (exchange.type === "topic" && !form.getFieldValue("routingKey")) {
+          form.setFieldsValue({ routingKey: "#" });
         }
 
         break;
@@ -110,8 +129,8 @@ const PublishMessage = () => {
     // Validate JSON if using JSON editor
     if (useJsonEditor && !jsonValid) {
       notification.error({
-        message: 'Invalid JSON',
-        description: 'Please fix the JSON content before publishing.',
+        message: "Invalid JSON",
+        description: "Please fix the JSON content before publishing.",
       });
       return;
     }
@@ -123,8 +142,8 @@ const PublishMessage = () => {
         payload = JSON.parse(jsonContent);
       } catch (error) {
         notification.error({
-          message: 'JSON Parse Error',
-          description: 'Could not parse JSON content',
+          message: "JSON Parse Error",
+          description: "Could not parse JSON content",
         });
         return;
       }
@@ -133,7 +152,7 @@ const PublishMessage = () => {
     }
 
     // Extract vhost and exchange name
-    const [vhost, exchangeName] = values.exchange.split('|');
+    const [vhost, exchangeName] = values.exchange.split("|");
 
     // Prepare message properties
     const properties = {};
@@ -157,8 +176,9 @@ const PublishMessage = () => {
         properties.headers = JSON.parse(values.headers);
       } catch (error) {
         notification.warning({
-          message: 'Headers Parse Error',
-          description: 'Headers are not valid JSON. Publishing without custom headers.',
+          message: "Headers Parse Error",
+          description:
+            "Headers are not valid JSON. Publishing without custom headers.",
         });
       }
     }
@@ -172,28 +192,29 @@ const PublishMessage = () => {
       const encodedVhost = encodeURIComponent(vhost);
       const encodedName = encodeURIComponent(exchangeName);
 
-      await axios.post(`/api/exchanges/${encodedVhost}/${encodedName}/publish`, {
-        routingKey: values.routingKey || '',
+      await api.publishMessage(
+        encodedVhost,
+        encodedName,
+        values.routingKey || "",
         payload,
         properties
-      });
+      );
 
       notification.success({
-        message: 'Message Published',
+        message: "Message Published",
         description: `Message published successfully to exchange "${exchangeName}"`,
-        icon: <CheckCircleOutlined style={{ color: '#52c41a' }} />
+        icon: <CheckCircleOutlined style={{ color: "#52c41a" }} />,
       });
 
       // Clear routing key and update timestamp for next message
       form.setFieldsValue({
-        routingKey: selectedExchangeType === 'topic' ? '#' : '',
+        routingKey: selectedExchangeType === "topic" ? "#" : "",
         // Keep other fields
       });
-
     } catch (error) {
-      console.error('Error publishing message:', error);
+      console.error("Error publishing message:", error);
       notification.error({
-        message: 'Publish Failed',
+        message: "Publish Failed",
         description: `Error publishing message: ${error.response?.data?.error || error.message}`,
       });
     } finally {
@@ -205,18 +226,20 @@ const PublishMessage = () => {
   const renderExchangeOptions = () => {
     const vhosts = Object.keys(exchanges).sort((a, b) => {
       // Default vhost ('/') first, then alphabetically
-      if (a === '/') return -1;
-      if (b === '/') return 1;
+      if (a === "/") return -1;
+      if (b === "/") return 1;
       return a.localeCompare(b);
     });
 
-    return vhosts.map(vhost => {
-      const vhostLabel = vhost === '/' ? 'Default vhost' : `vhost: ${vhost}`;
-      const vhostExchanges = exchanges[vhost].sort((a, b) => a.name.localeCompare(b.name));
+    return vhosts.map((vhost) => {
+      const vhostLabel = vhost === "/" ? "Default vhost" : `vhost: ${vhost}`;
+      const vhostExchanges = exchanges[vhost].sort((a, b) =>
+        a.name.localeCompare(b.name)
+      );
 
       return (
         <Select.OptGroup key={vhost} label={vhostLabel}>
-          {vhostExchanges.map(exchange => (
+          {vhostExchanges.map((exchange) => (
             <Option
               key={`${exchange.vhost}|${exchange.name}`}
               value={`${exchange.vhost}|${exchange.name}`}
@@ -236,21 +259,6 @@ const PublishMessage = () => {
 
   const handleJsonValidation = (isValid) => {
     setJsonValid(isValid);
-  };
-
-  // Provide default message content based on exchange type
-  const getDefaultMessageContent = () => {
-    switch (selectedExchangeType) {
-      case 'topic':
-        return '{\n  "type": "notification",\n  "message": "This is a topic message",\n  "timestamp": "' + new Date().toISOString() + '"\n}';
-      case 'fanout':
-        return '{\n  "broadcast": true,\n  "message": "This is a broadcast message",\n  "timestamp": "' + new Date().toISOString() + '"\n}';
-      case 'headers':
-        return '{\n  "type": "headers-message",\n  "content": "This message is routed by headers",\n  "timestamp": "' + new Date().toISOString() + '"\n}';
-      case 'direct':
-      default:
-        return '{\n  "message": "Hello, World!",\n  "timestamp": "' + new Date().toISOString() + '"\n}';
-    }
   };
 
   return (
@@ -277,9 +285,9 @@ const PublishMessage = () => {
           layout="vertical"
           onFinish={handleSubmit}
           initialValues={{
-            routingKey: '',
-            contentType: 'application/json',
-            persistent: true
+            routingKey: "",
+            contentType: "application/json",
+            persistent: true,
           }}
         >
           <Row gutter={16}>
@@ -287,7 +295,9 @@ const PublishMessage = () => {
               <Form.Item
                 name="exchange"
                 label="Exchange"
-                rules={[{ required: true, message: 'Please select an exchange' }]}
+                rules={[
+                  { required: true, message: "Please select an exchange" },
+                ]}
               >
                 <Select
                   placeholder="Select an exchange"
@@ -295,7 +305,9 @@ const PublishMessage = () => {
                   onChange={handleExchangeChange}
                   showSearch
                   filterOption={(input, option) =>
-                    option.children.toLowerCase().indexOf(input.toLowerCase()) >= 0
+                    option.children
+                      .toLowerCase()
+                      .indexOf(input.toLowerCase()) >= 0
                   }
                 >
                   {renderExchangeOptions()}
@@ -309,30 +321,34 @@ const PublishMessage = () => {
                 label={
                   <Space>
                     <span>Routing Key</span>
-                    {selectedExchangeType === 'topic' && (
+                    {selectedExchangeType === "topic" && (
                       <Tooltip title="For topic exchanges: Use * to match a word, # to match zero or more words">
-                        <InfoCircleOutlined style={{ color: 'rgba(0,0,0,.45)' }} />
+                        <InfoCircleOutlined
+                          style={{ color: "rgba(0,0,0,.45)" }}
+                        />
                       </Tooltip>
                     )}
-                    {selectedExchangeType === 'fanout' && (
-                      <Text type="secondary">(ignored for fanout exchanges)</Text>
+                    {selectedExchangeType === "fanout" && (
+                      <Text type="secondary">
+                        (ignored for fanout exchanges)
+                      </Text>
                     )}
                   </Space>
                 }
                 rules={[
                   {
-                    required: selectedExchangeType === 'direct',
-                    message: 'Routing key is required for direct exchanges'
-                  }
+                    required: selectedExchangeType === "direct",
+                    message: "Routing key is required for direct exchanges",
+                  },
                 ]}
               >
                 <Input
                   placeholder={
-                    selectedExchangeType === 'topic'
+                    selectedExchangeType === "topic"
                       ? "Example: orders.*.confirmed"
                       : "Enter routing key"
                   }
-                  disabled={selectedExchangeType === 'fanout'}
+                  disabled={selectedExchangeType === "fanout"}
                 />
               </Form.Item>
             </Col>
@@ -342,10 +358,7 @@ const PublishMessage = () => {
 
           <Row gutter={16}>
             <Col span={24} lg={8}>
-              <Form.Item
-                name="contentType"
-                label="Content Type"
-              >
+              <Form.Item name="contentType" label="Content Type">
                 <Input
                   placeholder="application/json"
                   addonAfter={
@@ -358,10 +371,7 @@ const PublishMessage = () => {
             </Col>
 
             <Col span={24} lg={8}>
-              <Form.Item
-                name="correlationId"
-                label="Correlation ID"
-              >
+              <Form.Item name="correlationId" label="Correlation ID">
                 <Input
                   placeholder="Optional correlation ID"
                   addonAfter={
@@ -374,10 +384,7 @@ const PublishMessage = () => {
             </Col>
 
             <Col span={24} lg={8}>
-              <Form.Item
-                name="messageId"
-                label="Message ID"
-              >
+              <Form.Item name="messageId" label="Message ID">
                 <Input
                   placeholder="Optional message ID"
                   addonAfter={
@@ -398,7 +405,9 @@ const PublishMessage = () => {
                   <Space>
                     <span>Headers</span>
                     <Tooltip title="Custom headers as JSON object">
-                      <InfoCircleOutlined style={{ color: 'rgba(0,0,0,.45)' }} />
+                      <InfoCircleOutlined
+                        style={{ color: "rgba(0,0,0,.45)" }}
+                      />
                     </Tooltip>
                   </Space>
                 }
@@ -416,10 +425,7 @@ const PublishMessage = () => {
                 label="Persistent Message"
                 valuePropName="checked"
               >
-                <Switch
-                  checkedChildren="Yes"
-                  unCheckedChildren="No"
-                />
+                <Switch checkedChildren="Yes" unCheckedChildren="No" />
               </Form.Item>
             </Col>
           </Row>
@@ -457,7 +463,9 @@ const PublishMessage = () => {
           ) : (
             <Form.Item
               name="messageContent"
-              rules={[{ required: true, message: 'Please enter message content' }]}
+              rules={[
+                { required: true, message: "Please enter message content" },
+              ]}
             >
               <TextArea
                 placeholder="Enter message content"

@@ -17,7 +17,7 @@ import {
   ReloadOutlined,
   QuestionCircleOutlined,
 } from "@ant-design/icons";
-import axios from "axios";
+import api from "../services/api"; // Import the API service
 import { useSocket } from "../context/SocketContext";
 
 const { Text } = Typography;
@@ -36,7 +36,7 @@ const Bindings = () => {
   const fetchBindings = async () => {
     setLoading(true);
     try {
-      const response = await axios.get("/api/bindings");
+      const response = await api.getBindings(); // Use the API service instead of direct axios call
       setBindings(response.data);
       filterBindings(response.data, searchText);
       setLastUpdated(new Date());

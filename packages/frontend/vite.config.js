@@ -1,3 +1,4 @@
+// vite.config.js
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import { resolve } from 'path';
@@ -27,7 +28,7 @@ export default defineConfig({
         },
     },
     build: {
-        outDir: 'build', // Match CRA's default output directory
+        outDir: 'build',
         sourcemap: true,
     },
 });

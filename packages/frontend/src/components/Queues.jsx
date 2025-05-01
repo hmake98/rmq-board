@@ -22,7 +22,7 @@ import {
   DeleteOutlined,
   ExclamationCircleOutlined,
 } from "@ant-design/icons";
-import axios from "axios";
+import api from "../services/api"; // Import the API service
 import { useSocket } from "../context/SocketContext";
 import MessageViewer from "./MessageViewer";
 
@@ -44,7 +44,7 @@ const Queues = () => {
   const fetchQueues = async () => {
     setLoading(true);
     try {
-      const response = await axios.get("/api/queues");
+      const response = await api.getQueues(); // Use the API service instead of direct axios call
       setQueues(response.data);
       filterQueues(response.data, searchText);
       setLastUpdated(new Date());
@@ -89,7 +89,7 @@ const Queues = () => {
     try {
       const vhost = encodeURIComponent(queue.vhost);
       const name = encodeURIComponent(queue.name);
-      const response = await axios.get(`/api/queues/${vhost}/${name}/get`);
+      const response = await api.getQueueMessages(vhost, name); // Use the API service instead of direct axios call
       setMessages(response.data);
     } catch (error) {
       console.error("Error fetching messages:", error);
@@ -109,7 +109,7 @@ const Queues = () => {
     try {
       const vhost = encodeURIComponent(queue.vhost);
       const name = encodeURIComponent(queue.name);
-      await axios.post(`/api/queues/${vhost}/${name}/purge`);
+      await api.purgeQueue(vhost, name); // Use the API service instead of direct axios call
       Modal.success({
         title: "Queue Purged",
         content: `All messages have been purged from "${queue.name}"`,

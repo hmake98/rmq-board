@@ -15,7 +15,7 @@ import {
   WarningOutlined,
   CheckCircleOutlined,
 } from "@ant-design/icons";
-import axios from "axios";
+import api from "../services/api"; // Import the API service
 import { useSocket } from "../context/SocketContext";
 
 const { Text } = Typography;
@@ -30,13 +30,16 @@ const Overview = () => {
   const fetchOverview = async () => {
     setLoading(true);
     try {
-      const response = await axios.get("/api/overview");
+      // Use the API service instead of direct axios call
+      const response = await api.getOverview();
       setOverview(response.data);
       setLastUpdated(new Date());
       setError(null);
     } catch (error) {
       console.error("Error fetching overview:", error);
-      setError("Failed to fetch overview data. Please check your connection.");
+      // Use the error handling helper from api.js
+      const errorDetails = api.handleRequestError(error);
+      setError(`Failed to fetch overview data: ${errorDetails.message}`);
     } finally {
       setLoading(false);
     }

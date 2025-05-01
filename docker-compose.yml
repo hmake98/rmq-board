@@ -1,5 +1,3 @@
-version: "3.8"
-
 services:
   rabbitmq:
     image: rabbitmq:3-management
@@ -31,38 +29,22 @@ services:
     ports:
       - "3001:3001"
     environment:
-      # Basic connection settings
-      - RABBITMQ_URL=http://rabbitmq:15672
-      - RABBITMQ_AMQP_URL=amqp://rabbitmq:5672
-      - RABBITMQ_USERNAME=guest
-      - RABBITMQ_PASSWORD=guest
-      - RABBITMQ_VHOST=/
+      # Core connection setting
+      - RABBITMQ_URL=amqp://guest:guest@rabbitmq:5672/
 
-      # SSL/TLS settings (disabled by default for local setup)
-      - RABBITMQ_SSL_ENABLED=false
-
-      # Application settings
-      - REFRESH_INTERVAL=5000
-      - BASE_PATH=/api/
+      # Optional settings
+      - SSL_VERIFY=false
       - PORT=3001
-      - MAX_RETRIES=5
-      - RETRY_TIMEOUT=3000
-      - LOG_LEVEL=info
+      - LOG_LEVEL=debug
+      - REFRESH_INTERVAL=10000
+      # - SKIP_AMQP_CONNECTION=false  # Uncommented if needed
     depends_on:
       rabbitmq:
         condition: service_healthy
     networks:
       - rmq_network
     healthcheck:
-      test:
-        [
-          "CMD",
-          "wget",
-          "--no-verbose",
-          "--tries=1",
-          "--spider",
-          "http://localhost:3001/api/health",
-        ]
+      test: ["CMD", "curl", "-f", "http://localhost:3001/api/health"]
       interval: 10s
       timeout: 5s
       retries: 3
@@ -76,15 +58,27 @@ services:
     container_name: rmq-board-frontend
     ports:
       - "3000:80"
+    environment:
+      - VITE_API_URL=http://localhost:3001/api
+      - VITE_SOCKET_URL=http://localhost:3001
+      - VITE_APP_TITLE=RMQ Board
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
     networks:
       - rmq_network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost/health.html"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
     restart: unless-stopped
 
 networks:
   rmq_network:
     driver: bridge
+    name: rmq-network
 
 volumes:
   rabbitmq_data:
+    name: rmq-rabbitmq-data

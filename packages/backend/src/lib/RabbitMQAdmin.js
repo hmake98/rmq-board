@@ -6,6 +6,7 @@ const socketIo = require('socket.io');
 const amqp = require('amqplib');
 const axios = require('axios');
 const { loadConfig } = require('../utils/config');
+const cors = require('cors');
 
 /**
  * RabbitMQ Admin UI for monitoring and managing RabbitMQ servers
@@ -203,9 +204,6 @@ class RabbitMQAdmin {
      * Set up Express routes
      */
     setupRoutes() {
-        // Serve static files
-        this.router.use('/static', express.static(path.join(__dirname, '../../public')));
-
         // Enable JSON parsing
         this.router.use(express.json());
         this.router.use(express.urlencoded({ extended: true }));
@@ -216,15 +214,6 @@ class RabbitMQAdmin {
             res.setHeader('X-Frame-Options', 'SAMEORIGIN');
             res.setHeader('X-XSS-Protection', '1; mode=block');
             next();
-        });
-
-        // Main dashboard route
-        this.router.get('/', (req, res) => {
-            res.render('dashboard', {
-                title: 'RabbitMQ Dashboard',
-                basePath: this.config.basePath,
-                layout: 'main'
-            });
         });
 
         // API routes
@@ -726,6 +715,13 @@ class RabbitMQAdmin {
 
         // Mount the router
         this.app.use(this.config.basePath, this.router);
+
+        // Enable CORS for the API
+        this.app.use(cors({
+            origin: '*',
+            methods: ['GET', 'POST', 'PUT', 'DELETE'],
+            allowedHeaders: ['Content-Type', 'Authorization']
+        }));
 
         // Setup WebSockets if server is provided
         if (appServer) {
