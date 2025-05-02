@@ -19,10 +19,11 @@ A modern, intuitive, and lightweight admin UI for RabbitMQ, designed to make mon
 - **Docker Ready** - Simple deployment alongside RabbitMQ
 
 ## 🖼️ Screenshots
-
-![Dashboard Screenshot](https://raw.githubusercontent.com/hmake98/rmq-board/main/screenshots/dashboard.png)
-![Queue Management Screenshot](https://raw.githubusercontent.com/hmake98/rmq-board/main/screenshots/queues.png)
-![Message Publishing Screenshot](https://raw.githubusercontent.com/hmake98/rmq-board/main/screenshots/publish.png)
+<img width="1440" alt="Screenshot 2025-05-03 at 1 04 40 AM" src="https://github.com/user-attachments/assets/a5120d71-73c7-499d-bf9d-ba4288f17627" />
+<img width="1440" alt="Screenshot 2025-05-03 at 1 05 02 AM" src="https://github.com/user-attachments/assets/7af404b8-4f6c-4ae5-82a1-aaf9eed8ee8b" />
+<img width="1439" alt="Screenshot 2025-05-03 at 1 05 11 AM" src="https://github.com/user-attachments/assets/3d860886-a85d-442d-964a-6534b41a5ba1" />
+<img width="1439" alt="Screenshot 2025-05-03 at 1 05 30 AM" src="https://github.com/user-attachments/assets/21809081-e00d-4dd0-a8a0-4c6519c076b4" />
+<img width="1440" alt="Screenshot 2025-05-03 at 1 05 44 AM" src="https://github.com/user-attachments/assets/ea831ce0-742d-4505-8984-595240d55b86" />
 
 ## 🚀 Quick Start with Docker
 
