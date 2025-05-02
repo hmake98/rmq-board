@@ -99,7 +99,14 @@ const Overview = () => {
     }
   }, [socket]);
 
-  // Format uptime with improved null safety and field detection
+  /**
+   * Converts an uptime value in milliseconds or seconds to a human-readable string.
+   *
+   * Handles null, undefined, non-numeric, and string inputs gracefully, returning "-" for invalid values. Automatically detects and adjusts for values reported in either milliseconds or seconds.
+   *
+   * @param {number|string|null|undefined} uptimeMs - The uptime value to format, in milliseconds or seconds.
+   * @returns {string} The formatted uptime string (e.g., "2d 3h 15m", "45s"), or "-" if the input is invalid.
+   */
   function formatUptime(uptimeMs) {
     console.log("Formatting uptime value:", uptimeMs, typeof uptimeMs);
 
@@ -141,7 +148,14 @@ const Overview = () => {
     }
   }
 
-  // Helper to safely get uptime from any field that might contain it
+  /**
+   * Retrieves the server uptime value from the overview data, checking multiple possible fields and providing fallbacks.
+   *
+   * @returns {number|null} The uptime in milliseconds, or {@code null} if overview data is unavailable.
+   *
+   * @remark
+   * If no explicit uptime is found, attempts to calculate it from the server's start time. If all sources are missing, returns a default value of 10,000 milliseconds.
+   */
   function getUptimeValue() {
     if (!overview) return null;
 
@@ -159,7 +173,12 @@ const Overview = () => {
     ); // 10 seconds as fallback
   }
 
-  // Format rate with null safety
+  /**
+   * Formats a numeric rate value to a string with two decimal places, returning "0.00" for null, undefined, or invalid input.
+   *
+   * @param {number|string|null|undefined} rate - The rate value to format.
+   * @returns {string} The formatted rate as a string with two decimal places.
+   */
   function formatRate(rate) {
     if (rate === undefined || rate === null) return "0.00";
     try {
@@ -170,7 +189,11 @@ const Overview = () => {
     }
   }
 
-  // Get connection type with null safety
+  /**
+   * Determines the current RabbitMQ connection type based on connection status.
+   *
+   * @returns {string} A string describing the active connection types ("HTTP API", "AMQP", "HTTP API + AMQP", or "Disconnected").
+   */
   function getConnectionType() {
     try {
       if (!connectionStatus) return "Disconnected";

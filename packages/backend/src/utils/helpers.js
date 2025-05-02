@@ -153,10 +153,11 @@ function formatBytes(bytes, decimals = 2) {
 }
 
 /**
- * Debounce a function
- * @param {Function} func - Function to debounce
- * @param {number} wait - Wait time in milliseconds
- * @returns {Function} Debounced function
+ * Returns a debounced version of the given function that delays its execution until after a specified wait time has elapsed since the last invocation.
+ *
+ * @param {Function} func - The function to debounce.
+ * @param {number} [wait=300] - The delay in milliseconds to wait after the last call before invoking {@link func}.
+ * @returns {Function} A debounced function that postpones execution of {@link func} until after {@link wait} milliseconds have passed since the last call.
  */
 function debounce(func, wait = 300) {
     let timeout;
@@ -172,9 +173,12 @@ function debounce(func, wait = 300) {
 }
 
 /**
- * Safely serialize data to prevent circular references
- * @param {any} data - Data to serialize
- * @returns {any} Safely serialized data
+ * Recursively serializes data into a plain structure, omitting functions and special properties to avoid circular references.
+ *
+ * Returns primitives as-is, serializes arrays and plain objects recursively, and excludes properties named `__proto__` or `constructor`.
+ *
+ * @param {any} data - The value to serialize.
+ * @returns {any} A safely serialized version of {@link data} with unsupported or unsafe properties omitted.
  */
 function safeSerialize(data) {
     // For null or primitive types, just return the value

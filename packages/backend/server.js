@@ -12,7 +12,15 @@ const logger = createLogger({
 // Track server state
 let rabbitMQAdmin = null;
 
-// Main function to start the server
+/**
+ * Initializes and starts the RabbitMQ Dashboard server.
+ *
+ * Reads configuration from environment variables, creates the server instance, and begins listening on the specified port.
+ *
+ * @returns {Promise<import('http').Server>} The running HTTP server instance.
+ *
+ * @throws {Error} If server startup fails, logs the error and terminates the process.
+ */
 async function startServer() {
     try {
         logger.info('Starting RabbitMQ Dashboard...');
