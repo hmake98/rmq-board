@@ -2,38 +2,31 @@ FROM node:20-alpine
 
 WORKDIR /app
 
-# Set environment variable to skip husky install during build
-ENV DOCKER_BUILD=1
+# Install system dependencies 
+RUN apk add --no-cache wget ca-certificates
 
-# Install necessary utilities for health check and SSL
-RUN apk add --no-cache wget ca-certificates openssl curl
-
-# Create certs directory for optional mounted certificates
-RUN mkdir -p /app/certs
-
-# Copy package.json files for all workspaces
-COPY package.json lerna.json ./
+# Copy package files and install dependencies
+COPY package.json ./
 COPY packages/backend/package.json ./packages/backend/
 
-# Install dependencies with better caching
-RUN npm install --omit=dev
+# Install dependencies - avoiding native build issues
+RUN npm install --omit=dev --no-optional || npm install --omit=dev --no-optional --force
 
-# Copy backend application files
+# Copy backend files
 COPY packages/backend/ ./packages/backend/
 
-# Expose the port the app runs on
+# Expose port
 EXPOSE 3001
 
-# Create a non-root user for better security
-RUN addgroup -S appgroup && adduser -S appuser -G appgroup
+# Create and use non-root user
+RUN addgroup -S appgroup && adduser -S appuser -G appgroup && \
+    chown -R appuser:appgroup /app
 USER appuser
 
-# Healthcheck to verify the server is responding
+# Healthcheck
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
     CMD wget -q --spider http://localhost:3001/api/health || exit 1
 
-# Set working directory to backend
+# Start server
 WORKDIR /app/packages/backend
-
-# Command to run the application
 CMD ["node", "server.js"]

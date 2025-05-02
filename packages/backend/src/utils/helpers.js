@@ -171,6 +171,34 @@ function debounce(func, wait = 300) {
     };
 }
 
+/**
+ * Safely serialize data to prevent circular references
+ * @param {any} data - Data to serialize
+ * @returns {any} Safely serialized data
+ */
+function safeSerialize(data) {
+    // For null or primitive types, just return the value
+    if (data === null || data === undefined || typeof data !== 'object') {
+        return data;
+    }
+
+    // For arrays, map each item through safeSerialize
+    if (Array.isArray(data)) {
+        return data.map(item => safeSerialize(item));
+    }
+
+    // For objects, create a new object with serialized properties
+    const result = {};
+    for (const [key, value] of Object.entries(data)) {
+        // Skip functions and special properties
+        if (typeof value !== 'function' && key !== '__proto__' && key !== 'constructor') {
+            result[key] = safeSerialize(value);
+        }
+    }
+
+    return result;
+}
+
 module.exports = {
     formatRate,
     formatUptime,
@@ -180,5 +208,6 @@ module.exports = {
     deepMerge,
     isObject,
     formatBytes,
-    debounce
+    debounce,
+    safeSerialize
 };

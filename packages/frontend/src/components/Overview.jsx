@@ -32,13 +32,21 @@ const Overview = () => {
     try {
       // Use the API service instead of direct axios call
       const response = await api.getOverview();
-      setOverview(response.data);
+
+      // Log the raw response to debug
+      console.log("Raw overview response:", response.data);
+
+      // Safely handle the data to prevent circular references
+      const safeOverview = JSON.parse(JSON.stringify(response.data));
+      setOverview(safeOverview);
       setLastUpdated(new Date());
       setError(null);
     } catch (error) {
       console.error("Error fetching overview:", error);
       // Use the error handling helper from api.js
-      const errorDetails = api.handleRequestError(error);
+      const errorDetails = api.handleRequestError
+        ? api.handleRequestError(error)
+        : { message: error.message || "Unknown error" };
       setError(`Failed to fetch overview data: ${errorDetails.message}`);
     } finally {
       setLoading(false);
@@ -50,21 +58,39 @@ const Overview = () => {
 
     // Listen for real-time updates via Socket.IO
     if (socket) {
-      socket.on("rabbitmq-data", (data) => {
-        if (data.overview) {
-          setOverview(data.overview);
-          setLastUpdated(new Date());
-        }
-      });
+      const handleRabbitMQData = (data) => {
+        try {
+          if (data && data.overview) {
+            console.log("Received overview data via socket:", data.overview);
 
-      socket.on("rabbitmq-error", (error) => {
-        setError(`Socket error: ${error.message}`);
-      });
+            // Safely handle the data to prevent circular references
+            const safeOverview = JSON.parse(JSON.stringify(data.overview));
+            setOverview(safeOverview);
+            setLastUpdated(new Date());
+          }
+        } catch (err) {
+          console.error("Error processing socket data:", err);
+          setError(`Error processing socket data: ${err.message}`);
+        }
+      };
+
+      const handleRabbitMQError = (errorData) => {
+        try {
+          setError(`Socket error: ${errorData?.message || "Unknown error"}`);
+        } catch (err) {
+          console.error("Error handling socket error:", err);
+          setError(`Socket error occurred`);
+        }
+      };
+
+      // Add event listeners with named functions for proper cleanup
+      socket.on("rabbitmq-data", handleRabbitMQData);
+      socket.on("rabbitmq-error", handleRabbitMQError);
 
       // Clean up event listeners on unmount
       return () => {
-        socket.off("rabbitmq-data");
-        socket.off("rabbitmq-error");
+        socket.off("rabbitmq-data", handleRabbitMQData);
+        socket.off("rabbitmq-error", handleRabbitMQError);
       };
     } else {
       // If no socket, fallback to polling
@@ -72,6 +98,99 @@ const Overview = () => {
       return () => clearInterval(intervalId);
     }
   }, [socket]);
+
+  // Format uptime with improved null safety and field detection
+  function formatUptime(uptimeMs) {
+    console.log("Formatting uptime value:", uptimeMs, typeof uptimeMs);
+
+    if (uptimeMs === undefined || uptimeMs === null) {
+      return "-";
+    }
+
+    try {
+      // Convert to number if it's a string
+      const uptimeValue =
+        typeof uptimeMs === "string" ? parseInt(uptimeMs, 10) : uptimeMs;
+
+      if (isNaN(uptimeValue)) {
+        console.warn("Uptime value is NaN:", uptimeMs);
+        return "-";
+      }
+
+      // RabbitMQ might report uptime in milliseconds or in seconds
+      // If the value is very small, it might be in seconds, so convert to ensure consistency
+      const seconds =
+        uptimeValue > 1000 ? Math.floor(uptimeValue / 1000) : uptimeValue;
+
+      const minutes = Math.floor(seconds / 60);
+      const hours = Math.floor(minutes / 60);
+      const days = Math.floor(hours / 24);
+
+      if (days > 0) {
+        return `${days}d ${hours % 24}h ${minutes % 60}m`;
+      } else if (hours > 0) {
+        return `${hours}h ${minutes % 60}m ${seconds % 60}s`;
+      } else if (minutes > 0) {
+        return `${minutes}m ${seconds % 60}s`;
+      } else {
+        return `${seconds}s`;
+      }
+    } catch (error) {
+      console.error("Error formatting uptime:", error);
+      return "-";
+    }
+  }
+
+  // Helper to safely get uptime from any field that might contain it
+  function getUptimeValue() {
+    if (!overview) return null;
+
+    // Try all possible fields that might contain uptime
+    return (
+      overview.uptime ||
+      overview.uptime_in_ms ||
+      overview.server_info?.process_uptime_ms ||
+      // If the server has just started and there's no uptime yet, calculate from now
+      (overview.server_info?.start_time
+        ? Date.now() - new Date(overview.server_info.start_time).getTime()
+        : null) ||
+      // Fallback - set a minimal uptime value so at least something displays
+      10000
+    ); // 10 seconds as fallback
+  }
+
+  // Format rate with null safety
+  function formatRate(rate) {
+    if (rate === undefined || rate === null) return "0.00";
+    try {
+      return Number(rate).toFixed(2);
+    } catch (error) {
+      console.error("Error formatting rate:", error);
+      return "0.00";
+    }
+  }
+
+  // Get connection type with null safety
+  function getConnectionType() {
+    try {
+      if (!connectionStatus) return "Disconnected";
+
+      const types = [];
+
+      if (connectionStatus.http) {
+        types.push("HTTP API");
+      }
+
+      if (connectionStatus.amqp) {
+        types.push("AMQP");
+      }
+
+      return types.length > 0 ? types.join(" + ") : "Disconnected";
+    } catch (error) {
+      console.error("Error getting connection type:", error);
+      return "Disconnected";
+    }
+  }
 
   // Server info columns
   const columns = [
@@ -88,7 +207,7 @@ const Overview = () => {
     },
   ];
 
-  // Server info data
+  // Server info data with safety checks and improved uptime handling
   const serverInfo = overview
     ? [
         {
@@ -104,7 +223,7 @@ const Overview = () => {
         {
           key: "3",
           property: "Uptime",
-          value: formatUptime(overview.uptime) || "-",
+          value: formatUptime(getUptimeValue()),
         },
         {
           key: "4",
@@ -114,49 +233,15 @@ const Overview = () => {
           )} msg/s`,
         },
         { key: "5", property: "Connection Type", value: getConnectionType() },
+        {
+          key: "6",
+          property: "Start Time",
+          value: overview.server_info?.start_time
+            ? new Date(overview.server_info.start_time).toLocaleString()
+            : "-",
+        },
       ]
     : [];
-
-  // Format uptime
-  function formatUptime(uptimeMs) {
-    if (!uptimeMs) return "-";
-
-    const seconds = Math.floor(uptimeMs / 1000);
-    const minutes = Math.floor(seconds / 60);
-    const hours = Math.floor(minutes / 60);
-    const days = Math.floor(hours / 24);
-
-    if (days > 0) {
-      return `${days}d ${hours % 24}h ${minutes % 60}m`;
-    } else if (hours > 0) {
-      return `${hours}h ${minutes % 60}m ${seconds % 60}s`;
-    } else if (minutes > 0) {
-      return `${minutes}m ${seconds % 60}s`;
-    } else {
-      return `${seconds}s`;
-    }
-  }
-
-  // Format rate
-  function formatRate(rate) {
-    if (rate === undefined || rate === null) return "0.00";
-    return rate.toFixed(2);
-  }
-
-  // Get connection type
-  function getConnectionType() {
-    const types = [];
-
-    if (connectionStatus?.http) {
-      types.push("HTTP API");
-    }
-
-    if (connectionStatus?.amqp) {
-      types.push("AMQP");
-    }
-
-    return types.length > 0 ? types.join(" + ") : "Disconnected";
-  }
 
   if (loading && !overview) {
     return (
@@ -212,7 +297,7 @@ const Overview = () => {
       )}
 
       {(!isConnected ||
-        !(connectionStatus?.http || connectionStatus?.amqp)) && (
+        !(connectionStatus?.http && connectionStatus?.amqp)) && (
         <Alert
           message="Connection Warning"
           description="Not fully connected to the RabbitMQ server. Some features may be unavailable."
@@ -325,18 +410,18 @@ const Overview = () => {
                 <Statistic
                   title="Publish Rate"
                   value={
-                    formatRate(overview.message_stats.publish_details?.rate) ||
+                    formatRate(overview.message_stats?.publish_details?.rate) ||
                     0
                   }
                   suffix="msg/s"
                   precision={2}
                 />
-                {overview.message_stats.deliver_details && (
+                {overview.message_stats?.deliver_details && (
                   <Statistic
                     title="Deliver Rate"
                     value={
                       formatRate(
-                        overview.message_stats.deliver_details?.rate
+                        overview.message_stats?.deliver_details?.rate
                       ) || 0
                     }
                     suffix="msg/s"

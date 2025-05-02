@@ -1,7 +1,6 @@
 services:
   rabbitmq:
     image: rabbitmq:3-management
-    container_name: rabbitmq
     hostname: rabbitmq
     ports:
       - "5672:5672"
@@ -9,76 +8,23 @@ services:
     environment:
       - RABBITMQ_DEFAULT_USER=guest
       - RABBITMQ_DEFAULT_PASS=guest
-    volumes:
-      - rabbitmq_data:/var/lib/rabbitmq
-    networks:
-      - rmq_network
     healthcheck:
       test: ["CMD", "rabbitmq-diagnostics", "check_port_connectivity"]
       interval: 10s
       timeout: 5s
       retries: 5
-      start_period: 15s
     restart: unless-stopped
 
-  backend:
+  app:
     build:
       context: .
-      dockerfile: Dockerfile.backend
-    container_name: rmq-board-backend
+      dockerfile: Dockerfile
     ports:
-      - "3001:3001"
+      - "3001:3001" # Backend API
+      - "8080:8080" # Frontend served by nginx
     environment:
-      # Core connection setting
       - RABBITMQ_URL=amqp://guest:guest@rabbitmq:5672/
-
-      # Optional settings
-      - SSL_VERIFY=false
       - PORT=3001
-      - LOG_LEVEL=debug
-      - REFRESH_INTERVAL=10000
-      # - SKIP_AMQP_CONNECTION=false  # Uncommented if needed
     depends_on:
-      rabbitmq:
-        condition: service_healthy
-    networks:
-      - rmq_network
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:3001/api/health"]
-      interval: 10s
-      timeout: 5s
-      retries: 3
-      start_period: 10s
+      - rabbitmq
     restart: unless-stopped
-
-  frontend:
-    build:
-      context: .
-      dockerfile: Dockerfile.frontend
-    container_name: rmq-board-frontend
-    ports:
-      - "3000:80"
-    environment:
-      - VITE_API_URL=http://localhost:3001/api
-      - VITE_SOCKET_URL=http://localhost:3001
-      - VITE_APP_TITLE=RMQ Board
-    depends_on:
-      backend:
-        condition: service_healthy
-    networks:
-      - rmq_network
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost/health.html"]
-      interval: 10s
-      timeout: 5s
-      retries: 3
-    restart: unless-stopped
-
-networks:
-  rmq_network:
-    driver: bridge
-    name: rmq-network
-
-volumes:
-  rabbitmq_data:
-    name: rmq-rabbitmq-data

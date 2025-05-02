@@ -17,18 +17,11 @@ async function startServer() {
     try {
         logger.info('Starting RabbitMQ Dashboard...');
 
-        // Mask password in URL for logging
-        const maskedUrl = process.env.RABBITMQ_URL ?
-            process.env.RABBITMQ_URL.replace(/(\/\/[^:]+:)([^@]+)(@)/, '$1***$3') :
-            'No URL provided';
-
-        logger.info(`RabbitMQ URL: ${maskedUrl}`);
-
-        // Get the port from environment or use 3001 as default (to avoid conflicts with React)
+        // Get the port from environment or use default
         const port = parseInt(process.env.PORT, 10) || 3001;
 
         // Set the base path for the API
-        const basePath = process.env.BASE_PATH || '/api/';
+        const basePath = process.env.BASE_PATH || '/';
 
         // Create RabbitMQ Admin instance
         rabbitMQAdmin = new RabbitMQAdmin({

@@ -1,4 +1,5 @@
-import { useState, useEffect } from "react";
+// src/components/Queues.jsx
+import { useState, useEffect, useCallback } from "react";
 import {
   Table,
   Button,
@@ -14,6 +15,12 @@ import {
   Badge,
   Popconfirm,
   Empty,
+  notification,
+  Drawer,
+  Statistic,
+  Tabs,
+  Row,
+  Col,
 } from "antd";
 import {
   SearchOutlined,
@@ -21,12 +28,15 @@ import {
   EyeOutlined,
   DeleteOutlined,
   ExclamationCircleOutlined,
+  InfoCircleOutlined,
+  AreaChartOutlined,
 } from "@ant-design/icons";
 import api from "../services/api"; // Import the API service
 import { useSocket } from "../context/SocketContext";
 import MessageViewer from "./MessageViewer";
 
-const { Text } = Typography;
+const { Text, Title } = Typography;
+const { TabPane } = Tabs;
 
 const Queues = () => {
   const [queues, setQueues] = useState([]);
@@ -35,16 +45,19 @@ const Queues = () => {
   const [error, setError] = useState(null);
   const [searchText, setSearchText] = useState("");
   const [viewingQueue, setViewingQueue] = useState(null);
+  const [queueDetails, setQueueDetails] = useState(null);
   const [messages, setMessages] = useState([]);
   const [messagesLoading, setMessagesLoading] = useState(false);
   const [lastUpdated, setLastUpdated] = useState(null);
-  const { socket } = useSocket();
+  const { socket, isConnected, connectionStatus } = useSocket();
+  const [drawerVisible, setDrawerVisible] = useState(false);
 
   // Fetch queues data
-  const fetchQueues = async () => {
+  const fetchQueues = useCallback(async () => {
     setLoading(true);
     try {
-      const response = await api.getQueues(); // Use the API service instead of direct axios call
+      const response = await api.getQueues();
+      console.log("Queues data received:", response.data);
       setQueues(response.data);
       filterQueues(response.data, searchText);
       setLastUpdated(new Date());
@@ -55,7 +68,7 @@ const Queues = () => {
     } finally {
       setLoading(false);
     }
-  };
+  }, [searchText]);
 
   // Filter queues based on search text
   const filterQueues = (queueData, text) => {
@@ -80,16 +93,38 @@ const Queues = () => {
     filterQueues(queues, value);
   };
 
+  // Fetch queue details
+  const fetchQueueDetails = async (queue) => {
+    try {
+      const vhost = encodeURIComponent(queue.vhost || "/");
+      const name = encodeURIComponent(queue.name);
+      const response = await api.getQueue(vhost, name);
+      console.log("Queue details received:", response.data);
+      // Ensure we're getting a plain object with no circular references
+      setQueueDetails(JSON.parse(JSON.stringify(response.data)));
+    } catch (error) {
+      console.error("Error fetching queue details:", error);
+      notification.error({
+        message: "Error",
+        description: `Failed to fetch details for queue "${queue.name}"`,
+      });
+    }
+  };
+
   // View messages in a queue
   const viewMessages = async (queue) => {
     setViewingQueue(queue);
     setMessagesLoading(true);
     setMessages([]);
+    setDrawerVisible(true);
 
     try {
-      const vhost = encodeURIComponent(queue.vhost);
+      // await fetchQueueDetails(queue);
+
+      const vhost = encodeURIComponent(queue.vhost || "/");
       const name = encodeURIComponent(queue.name);
-      const response = await api.getQueueMessages(vhost, name); // Use the API service instead of direct axios call
+      const response = await api.getQueueMessages(vhost, name);
+      console.log("Queue messages received:", response.data);
       setMessages(response.data);
     } catch (error) {
       console.error("Error fetching messages:", error);
@@ -99,27 +134,67 @@ const Queues = () => {
     }
   };
 
-  // Close message viewer modal
+  // Refresh messages for the currently viewed queue
+  const refreshMessages = async () => {
+    if (!viewingQueue) return;
+
+    setMessagesLoading(true);
+    try {
+      const vhost = encodeURIComponent(viewingQueue.vhost || "/");
+      const name = encodeURIComponent(viewingQueue.name);
+      const response = await api.getQueueMessages(vhost, name);
+      setMessages(response.data);
+      await fetchQueueDetails(viewingQueue);
+      notification.success({
+        message: "Messages Refreshed",
+        description: `Successfully refreshed messages from queue "${viewingQueue.name}"`,
+        duration: 2,
+      });
+    } catch (error) {
+      console.error("Error refreshing messages:", error);
+      notification.error({
+        message: "Error",
+        description: `Failed to refresh messages from queue "${viewingQueue.name}"`,
+      });
+    } finally {
+      setMessagesLoading(false);
+    }
+  };
+
+  // Close message viewer drawer
   const closeMessageViewer = () => {
     setViewingQueue(null);
+    setQueueDetails(null);
+    setDrawerVisible(false);
   };
 
   // Purge a queue
   const purgeQueue = async (queue) => {
     try {
-      const vhost = encodeURIComponent(queue.vhost);
+      const vhost = encodeURIComponent(queue.vhost || "/");
       const name = encodeURIComponent(queue.name);
-      await api.purgeQueue(vhost, name); // Use the API service instead of direct axios call
-      Modal.success({
-        title: "Queue Purged",
-        content: `All messages have been purged from "${queue.name}"`,
+      await api.purgeQueue(vhost, name);
+
+      notification.success({
+        message: "Queue Purged",
+        description: `All messages have been purged from "${queue.name}"`,
       });
-      fetchQueues(); // Refresh the queue list
+
+      fetchQueues();
+
+      // If we're currently viewing this queue, refresh its messages
+      if (
+        viewingQueue &&
+        viewingQueue.name === queue.name &&
+        viewingQueue.vhost === queue.vhost
+      ) {
+        refreshMessages();
+      }
     } catch (error) {
       console.error("Error purging queue:", error);
-      Modal.error({
-        title: "Purge Failed",
-        content: `Failed to purge queue "${queue.name}": ${error.message}`,
+      notification.error({
+        message: "Purge Failed",
+        description: `Failed to purge queue "${queue.name}": ${error.message}`,
       });
     }
   };
@@ -130,24 +205,59 @@ const Queues = () => {
 
     // Set up socket listeners for real-time updates
     if (socket) {
-      socket.on("rabbitmq-data", (data) => {
-        if (data.queues) {
-          setQueues(data.queues);
-          filterQueues(data.queues, searchText);
-          setLastUpdated(new Date());
+      const handleRabbitMQData = (data) => {
+        try {
+          // Safely handle incoming data by ensuring it's a plain object
+          if (data && data.queues) {
+            console.log("Socket data received:", data.timestamp);
+            // Create a safe copy to avoid circular references
+            const safeQueues = JSON.parse(JSON.stringify(data.queues));
+            setQueues(safeQueues);
+            filterQueues(safeQueues, searchText);
+            setLastUpdated(new Date());
+          }
+        } catch (error) {
+          console.error("Error processing socket data:", error);
         }
-      });
+      };
+
+      // Add event listener
+      socket.on("rabbitmq-data", handleRabbitMQData);
 
       // Clean up event listeners
       return () => {
-        socket.off("rabbitmq-data");
+        socket.off("rabbitmq-data", handleRabbitMQData);
       };
     } else {
       // Fallback to polling if no socket
       const intervalId = setInterval(fetchQueues, 5000);
       return () => clearInterval(intervalId);
     }
-  }, [socket, searchText]);
+  }, [socket, searchText, fetchQueues]);
+
+  // Helper to determine queue health status
+  function getQueueHealthStatus(queue) {
+    if (!queue || !queue.state) return "error";
+
+    if (queue.state !== "running") {
+      return "error";
+    }
+    if ((queue.consumers === 0 || !queue.consumers) && queue.messages > 0) {
+      return "warning";
+    }
+    return "success";
+  }
+
+  // Helper to format rate
+  function formatRate(rate) {
+    if (rate === undefined || rate === null) return "0.00";
+    try {
+      return Number(rate).toFixed(2);
+    } catch (error) {
+      console.error("Error formatting rate:", error);
+      return "0.00";
+    }
+  }
 
   // Table columns
   const columns = [
@@ -267,22 +377,226 @@ const Queues = () => {
     },
   ];
 
-  // Helper to determine queue health status
-  function getQueueHealthStatus(queue) {
-    if (queue.state !== "running") {
-      return "error";
+  // Render queue details in drawer
+  const renderQueueDetails = () => {
+    if (!queueDetails) {
+      return <Spin />;
     }
-    if (queue.consumers === 0 && queue.messages > 0) {
-      return "warning";
-    }
-    return "success";
-  }
 
-  // Helper to format rate
-  function formatRate(rate) {
-    if (rate === undefined || rate === null) return "0.00";
-    return rate.toFixed(2);
-  }
+    return (
+      <div>
+        <Tabs defaultActiveKey="stats">
+          <TabPane
+            tab={
+              <span>
+                <InfoCircleOutlined /> Queue Stats
+              </span>
+            }
+            key="stats"
+          >
+            <Row gutter={[16, 16]}>
+              <Col span={8}>
+                <Card>
+                  <Statistic
+                    title="Messages Ready"
+                    value={queueDetails.messages_ready || 0}
+                    valueStyle={{
+                      color:
+                        queueDetails.messages_ready > 0 ? "#ff4d4f" : "#52c41a",
+                    }}
+                  />
+                </Card>
+              </Col>
+              <Col span={8}>
+                <Card>
+                  <Statistic
+                    title="Messages Unacknowledged"
+                    value={queueDetails.messages_unacknowledged || 0}
+                    valueStyle={{
+                      color:
+                        queueDetails.messages_unacknowledged > 0
+                          ? "#faad14"
+                          : "#52c41a",
+                    }}
+                  />
+                </Card>
+              </Col>
+              <Col span={8}>
+                <Card>
+                  <Statistic
+                    title="Total Messages"
+                    value={queueDetails.messages || 0}
+                  />
+                </Card>
+              </Col>
+            </Row>
+
+            <Card style={{ marginTop: 16 }}>
+              <Title level={5}>Queue Details</Title>
+              <Table
+                dataSource={[
+                  { key: "name", property: "Name", value: queueDetails.name },
+                  {
+                    key: "vhost",
+                    property: "Virtual Host",
+                    value: queueDetails.vhost,
+                  },
+                  {
+                    key: "durable",
+                    property: "Durable",
+                    value: queueDetails.durable ? (
+                      <Tag color="green">Yes</Tag>
+                    ) : (
+                      <Tag color="red">No</Tag>
+                    ),
+                  },
+                  {
+                    key: "auto_delete",
+                    property: "Auto-delete",
+                    value: queueDetails.auto_delete ? (
+                      <Tag color="blue">Yes</Tag>
+                    ) : (
+                      <Tag>No</Tag>
+                    ),
+                  },
+                  {
+                    key: "exclusive",
+                    property: "Exclusive",
+                    value: queueDetails.exclusive ? (
+                      <Tag color="purple">Yes</Tag>
+                    ) : (
+                      <Tag>No</Tag>
+                    ),
+                  },
+                  {
+                    key: "consumers",
+                    property: "Consumers",
+                    value: queueDetails.consumers || 0,
+                  },
+                  {
+                    key: "memory",
+                    property: "Memory Usage",
+                    value: `${((queueDetails.memory || 0) / (1024 * 1024)).toFixed(2)} MB`,
+                  },
+                ]}
+                columns={[
+                  {
+                    title: "Property",
+                    dataIndex: "property",
+                    key: "property",
+                    width: "30%",
+                  },
+                  { title: "Value", dataIndex: "value", key: "value" },
+                ]}
+                pagination={false}
+                size="small"
+              />
+            </Card>
+
+            {queueDetails.message_stats && (
+              <Card style={{ marginTop: 16 }}>
+                <Title level={5}>Message Rates</Title>
+                <Row gutter={[16, 16]}>
+                  {queueDetails.message_stats.publish_details && (
+                    <Col span={8}>
+                      <Statistic
+                        title="Publish Rate"
+                        value={formatRate(
+                          queueDetails.message_stats.publish_details.rate
+                        )}
+                        suffix="msg/s"
+                        precision={2}
+                      />
+                    </Col>
+                  )}
+
+                  {queueDetails.message_stats.deliver_details && (
+                    <Col span={8}>
+                      <Statistic
+                        title="Deliver Rate"
+                        value={formatRate(
+                          queueDetails.message_stats.deliver_details.rate
+                        )}
+                        suffix="msg/s"
+                        precision={2}
+                      />
+                    </Col>
+                  )}
+
+                  {queueDetails.message_stats.ack_details && (
+                    <Col span={8}>
+                      <Statistic
+                        title="Acknowledge Rate"
+                        value={formatRate(
+                          queueDetails.message_stats.ack_details.rate
+                        )}
+                        suffix="msg/s"
+                        precision={2}
+                      />
+                    </Col>
+                  )}
+                </Row>
+              </Card>
+            )}
+          </TabPane>
+
+          <TabPane
+            tab={
+              <span>
+                <AreaChartOutlined /> Actions
+              </span>
+            }
+            key="actions"
+          >
+            <Card>
+              <Space direction="vertical" style={{ width: "100%" }}>
+                <Alert
+                  message="Queue Operations"
+                  description="These operations affect the queue and its messages. Use with caution."
+                  type="warning"
+                  showIcon
+                  style={{ marginBottom: 16 }}
+                />
+
+                <Button
+                  type="primary"
+                  danger
+                  icon={<DeleteOutlined />}
+                  disabled={
+                    !queueDetails.messages || queueDetails.messages === 0
+                  }
+                  onClick={() => {
+                    Modal.confirm({
+                      title: "Purge Queue",
+                      icon: <ExclamationCircleOutlined />,
+                      content: `Are you sure you want to purge all ${queueDetails.messages} messages from "${queueDetails.name}"? This operation cannot be undone.`,
+                      okText: "Yes, Purge Queue",
+                      okType: "danger",
+                      cancelText: "Cancel",
+                      onOk: () => {
+                        purgeQueue(viewingQueue);
+                      },
+                    });
+                  }}
+                  block
+                >
+                  Purge All Messages ({queueDetails.messages || 0})
+                </Button>
+
+                <Button
+                  icon={<ReloadOutlined />}
+                  onClick={refreshMessages}
+                  block
+                >
+                  Refresh Queue Data
+                </Button>
+              </Space>
+            </Card>
+          </TabPane>
+        </Tabs>
+      </div>
+    );
+  };
 
   return (
     <div>
@@ -324,14 +638,43 @@ const Queues = () => {
       )}
 
       <Card style={{ marginBottom: 16 }}>
-        <Input
-          placeholder="Search queues by name"
-          prefix={<SearchOutlined style={{ color: "rgba(0,0,0,.25)" }} />}
-          value={searchText}
-          onChange={handleSearch}
-          style={{ width: 300 }}
-          allowClear
-        />
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+          }}
+        >
+          <Input
+            placeholder="Search queues by name"
+            prefix={<SearchOutlined style={{ color: "rgba(0,0,0,.25)" }} />}
+            value={searchText}
+            onChange={handleSearch}
+            style={{ width: 300 }}
+            allowClear
+          />
+
+          <Space>
+            {!isConnected && (
+              <Alert
+                message="Live updates unavailable"
+                type="warning"
+                showIcon
+                banner
+                style={{
+                  padding: "4px 8px",
+                  marginBottom: 0,
+                  fontSize: "12px",
+                  height: "32px",
+                }}
+              />
+            )}
+            <Text>
+              Total: {filteredQueues.length} queue
+              {filteredQueues.length !== 1 ? "s" : ""}
+            </Text>
+          </Space>
+        </div>
       </Card>
 
       <Card>
@@ -339,7 +682,7 @@ const Queues = () => {
           columns={columns}
           dataSource={filteredQueues.map((q) => ({
             ...q,
-            key: `${q.vhost}/${q.name}`,
+            key: `${q.vhost || "/"}/${q.name}`,
           }))}
           loading={loading}
           size="middle"
@@ -354,36 +697,55 @@ const Queues = () => {
         />
       </Card>
 
-      {/* Message Viewer Modal */}
-      <Modal
-        title={`Messages in ${viewingQueue?.name}`}
-        open={!!viewingQueue}
-        onCancel={closeMessageViewer}
+      {/* Message Viewer Drawer */}
+      <Drawer
+        title={
+          viewingQueue ? `Messages in ${viewingQueue.name}` : "Queue Messages"
+        }
+        placement="right"
+        closable={true}
+        onClose={closeMessageViewer}
+        open={drawerVisible}
         width={800}
-        footer={[
-          <Button key="close" onClick={closeMessageViewer}>
-            Close
-          </Button>,
+        extra={
           <Button
-            key="refresh"
             type="primary"
             icon={<ReloadOutlined />}
-            onClick={() => viewingQueue && viewMessages(viewingQueue)}
+            onClick={refreshMessages}
             loading={messagesLoading}
           >
             Refresh
-          </Button>,
-        ]}
+          </Button>
+        }
       >
-        {messagesLoading ? (
-          <div style={{ textAlign: "center", padding: "24px" }}>
-            <Spin size="large" />
-            <div style={{ marginTop: 16 }}>Loading messages...</div>
-          </div>
-        ) : (
-          <MessageViewer messages={messages} />
-        )}
-      </Modal>
+        <Tabs defaultActiveKey="messages">
+          <TabPane
+            tab={
+              <span>
+                <EyeOutlined /> Messages
+              </span>
+            }
+            key="messages"
+          >
+            <MessageViewer
+              messages={messages}
+              loading={messagesLoading}
+              onRefresh={refreshMessages}
+            />
+          </TabPane>
+
+          {/* <TabPane
+            tab={
+              <span>
+                <InfoCircleOutlined /> Queue Info
+              </span>
+            }
+            key="info"
+          >
+            {renderQueueDetails()}
+          </TabPane> */}
+        </Tabs>
+      </Drawer>
     </div>
   );
 };
