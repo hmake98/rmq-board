@@ -1,11 +1,10 @@
-import { createContext, useContext, useEffect, useState } from "react";
-import { message } from "antd";
-import io from "socket.io-client";
+import React, { createContext, useContext, useState, useEffect } from "react";
+import { io } from "socket.io-client";
 
-const SocketContext = createContext();
+// Create context
+const SocketContext = createContext(null);
 
-export const useSocket = () => useContext(SocketContext);
-
+// Socket provider component
 export const SocketProvider = ({ children }) => {
   const [socket, setSocket] = useState(null);
   const [isConnected, setIsConnected] = useState(false);
@@ -13,77 +12,131 @@ export const SocketProvider = ({ children }) => {
     http: false,
     amqp: false,
   });
-  const [reconnectAttempt, setReconnectAttempt] = useState(0);
 
+  // Initialize socket connection
   useEffect(() => {
-    // Get socket URL from environment variables or use default
-    const socketUrl =
-      import.meta.env.VITE_SOCKET_URL || "http://localhost:3001";
+    // Determine the socket URL based on the environment
+    const socketUrl = window.location.origin;
 
-    // Initialize Socket.io connection
+    console.log("Connecting to Socket.IO at:", socketUrl);
+
+    // Create socket instance
     const socketInstance = io(socketUrl, {
-      path: "/socket.io",
-      reconnection: true,
-      reconnectionAttempts: 10,
+      reconnectionAttempts: 5,
       reconnectionDelay: 1000,
-      reconnectionDelayMax: 5000,
-      randomizationFactor: 0.5,
-      transports: ["websocket", "polling"], // Try WebSocket first, then polling
+      autoConnect: true,
+      transports: ["websocket", "polling"],
     });
 
-    // Connection events
-    socketInstance.on("connect", () => {
-      setIsConnected(true);
-      setReconnectAttempt(0);
-      console.log("Socket connected to", socketUrl);
-    });
-
-    socketInstance.on("disconnect", () => {
-      setIsConnected(false);
-      console.log("Socket disconnected");
-    });
-
-    socketInstance.on("connect_error", (error) => {
-      console.error("Socket connection error:", error);
-      setReconnectAttempt((prev) => prev + 1);
-      if (reconnectAttempt > 5) {
-        message.error(
-          "Failed to connect to the server. Please check your connection."
-        );
-      }
-    });
-
-    // RabbitMQ specific events
-    socketInstance.on("connection-status", (status) => {
-      setConnectionStatus(status);
-    });
-
-    socketInstance.on("rabbitmq-error", (error) => {
-      console.error("RabbitMQ error:", error);
-      message.error(`RabbitMQ error: ${error.message}`);
-    });
-
-    socketInstance.on("server-shutdown", () => {
-      message.warning("Server is shutting down...");
-    });
-
-    // Store socket in state
+    // Set socket instance
     setSocket(socketInstance);
 
-    // Clean up on unmount
+    // Socket event handlers
+    const onConnect = () => {
+      console.log("Socket connected");
+      setIsConnected(true);
+
+      // Request initial connection status
+      socketInstance.emit("request-data", "connection-status");
+    };
+
+    const onDisconnect = () => {
+      console.log("Socket disconnected");
+      setIsConnected(false);
+    };
+
+    const onConnectionStatus = (status) => {
+      console.log("Received connection status:", status);
+
+      // Convert to a safe format to avoid circular references
+      const safeStatus = {
+        http: status && typeof status.http === "boolean" ? status.http : false,
+        amqp: status && typeof status.amqp === "boolean" ? status.amqp : false,
+        timestamp:
+          status && status.timestamp
+            ? status.timestamp
+            : new Date().toISOString(),
+      };
+
+      setConnectionStatus(safeStatus);
+    };
+
+    const onRabbitMQData = (data) => {
+      // If the data contains connection status, update it
+      if (data && data.connectionStatus) {
+        const safeStatus = {
+          http: data.connectionStatus.http || false,
+          amqp: data.connectionStatus.amqp || false,
+          timestamp: data.timestamp || new Date().toISOString(),
+        };
+
+        setConnectionStatus(safeStatus);
+      }
+    };
+
+    const onError = (error) => {
+      console.error("Socket error:", error);
+    };
+
+    // Register event listeners
+    socketInstance.on("connect", onConnect);
+    socketInstance.on("disconnect", onDisconnect);
+    socketInstance.on("connection-status", onConnectionStatus);
+    socketInstance.on("rabbitmq-data", onRabbitMQData);
+    socketInstance.on("error", onError);
+    socketInstance.on("connect_error", (error) => {
+      console.error("Connection error:", error);
+    });
+
+    // Cleanup on unmount
     return () => {
-      socketInstance.disconnect();
+      if (socketInstance) {
+        socketInstance.off("connect", onConnect);
+        socketInstance.off("disconnect", onDisconnect);
+        socketInstance.off("connection-status", onConnectionStatus);
+        socketInstance.off("rabbitmq-data", onRabbitMQData);
+        socketInstance.off("error", onError);
+        socketInstance.off("connect_error");
+        socketInstance.disconnect();
+      }
     };
   }, []);
 
+  // Function to request refreshed data
+  const refreshData = (dataType = "all") => {
+    if (socket && isConnected) {
+      socket.emit("request-data", dataType);
+    }
+  };
+
+  // Function to directly request connection status
+  const refreshConnectionStatus = () => {
+    if (socket && isConnected) {
+      socket.emit("request-data", "connection-status");
+    }
+  };
+
+  // Provider value
   const value = {
     socket,
     isConnected,
     connectionStatus,
-    reconnectAttempt,
+    refreshData,
+    refreshConnectionStatus,
   };
 
   return (
     <SocketContext.Provider value={value}>{children}</SocketContext.Provider>
   );
 };
+
+// Custom hook to use the socket context
+export const useSocket = () => {
+  const context = useContext(SocketContext);
+  if (!context) {
+    throw new Error("useSocket must be used within a SocketProvider");
+  }
+  return context;
+};
+
+export default SocketContext;

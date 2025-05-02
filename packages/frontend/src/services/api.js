@@ -1,24 +1,26 @@
 import axios from 'axios';
+import { message } from 'antd';
 
 // Get API base URL from environment variables or use default
-// const API_BASE_URL = import.meta.env.VITE_API_URL || '/api';
+const API_BASE_URL = '/api';
 
 // Create an axios instance with common configuration
 const api = axios.create({
-  baseURL: '/api',
-  timeout: 10000,
+  baseURL: API_BASE_URL,
+  timeout: 30000, // Increased timeout for potential slow operations
   headers: {
     'Content-Type': 'application/json'
   }
 });
 
-// Request interceptor to add auth if needed
+// Request interceptor for logging and potential auth
 api.interceptors.request.use(
   config => {
     // You can add authentication headers here if needed
     return config;
   },
   error => {
+    console.error('API Request Error:', error);
     return Promise.reject(error);
   }
 );
@@ -36,12 +38,32 @@ api.interceptors.response.use(
         data: error.response.data,
         headers: error.response.headers
       });
+
+      // Handle specific status codes
+      switch (error.response.status) {
+        case 401:
+          message.error('Authentication failed. Please check your credentials.');
+          break;
+        case 403:
+          message.error('You do not have permission to perform this action.');
+          break;
+        case 404:
+          message.error('Resource not found.');
+          break;
+        case 500:
+          message.error('Server error. Please try again later.');
+          break;
+        default:
+          message.error(`Error: ${error.response.data?.error || 'Unknown error occurred'}`);
+      }
     } else if (error.request) {
       // The request was made but no response was received
       console.error('API Error: No response received', error.request);
+      message.error('No response from server. Please check your connection.');
     } else {
       // Something happened in setting up the request that triggered an Error
       console.error('API Error:', error.message);
+      message.error(`Error: ${error.message}`);
     }
 
     // Propagate error for component-level handling
@@ -56,16 +78,20 @@ const endpoints = {
 
   // Queues
   getQueues: () => api.get('/queues'),
-  getQueue: (vhost, name) => api.get(`/queues/${encodeURIComponent(vhost)}/${encodeURIComponent(name)}`),
+  getQueue: (vhost, name) => {
+    // Handle potential double-encoding issues
+    const cleanVhost = vhost.includes('%') ? decodeURIComponent(vhost) : vhost;
+    return api.get(`/api/queues/${encodeURIComponent(cleanVhost)}/${encodeURIComponent(name)}`);
+  },
   getQueueMessages: (vhost, name) => api.get(`/queues/${encodeURIComponent(vhost)}/${encodeURIComponent(name)}/get`),
   purgeQueue: (vhost, name) => api.post(`/queues/${encodeURIComponent(vhost)}/${encodeURIComponent(name)}/purge`),
 
   // Exchanges
   getExchanges: () => api.get('/exchanges'),
   getExchange: (vhost, name) => api.get(`/exchanges/${encodeURIComponent(vhost)}/${encodeURIComponent(name)}`),
-  publishMessage: (vhost, name, message) => api.post(
+  publishMessage: (vhost, name, routingKey, payload, properties) => api.post(
     `/exchanges/${encodeURIComponent(vhost)}/${encodeURIComponent(name)}/publish`,
-    message
+    { routingKey, payload, properties }
   ),
 
   // Bindings

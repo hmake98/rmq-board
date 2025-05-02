@@ -1,16 +1,14 @@
 // src/lib/RabbitMQAdmin.js
 const express = require('express');
-const path = require('path');
 const http = require('http');
 const socketIo = require('socket.io');
 const amqp = require('amqplib');
 const axios = require('axios');
-const { loadConfig } = require('../utils/config');
 const cors = require('cors');
+const { loadConfig } = require('../utils/config');
 
 /**
  * RabbitMQ Admin UI for monitoring and managing RabbitMQ servers
- * Simplified to work with a single RABBITMQ_URL environment variable
  */
 class RabbitMQAdmin {
     /**
@@ -39,7 +37,6 @@ class RabbitMQAdmin {
         // Connection states
         this.httpConnected = false;
         this.amqpConnected = false;
-        this.useHttpOnly = this.config.skipAmqpConnection || false;
 
         // Cache for API calls
         this.cache = {
@@ -58,27 +55,21 @@ class RabbitMQAdmin {
      * Initialize API clients
      */
     async initialize() {
-        // Initialize HTTP client first
         try {
+            // Initialize HTTP client
             await this._initializeHttpClient();
-        } catch (error) {
-            this.logger.error(`Failed to connect to RabbitMQ API: ${error.message}`);
-            throw new Error('Cannot connect to RabbitMQ Management API');
-        }
 
-        // Skip AMQP if configured to do so
-        if (this.config.skipAmqpConnection) {
-            this.logger.info('AMQP connection disabled by configuration');
-            this.useHttpOnly = true;
-            return;
-        }
+            // Try to initialize AMQP client
+            try {
+                await this._initializeAmqpClient();
+            } catch (error) {
+                this.logger.warn(`AMQP connection failed: ${error.message}. Using HTTP-only mode.`);
+            }
 
-        // Try to initialize AMQP client, but don't fail if unsuccessful
-        try {
-            await this._initializeAmqpClient();
+            return true;
         } catch (error) {
-            this.logger.warn(`AMQP connection failed: ${error.message}. Using HTTP-only mode.`);
-            this.useHttpOnly = true;
+            this.logger.error(`Failed to initialize RabbitMQ connections: ${error.message}`);
+            throw error;
         }
     }
 
@@ -87,33 +78,19 @@ class RabbitMQAdmin {
      * @private
      */
     async _initializeHttpClient() {
-        // Create axios client with proper options
         const clientOptions = {
             baseURL: this.config.rabbitMQUrl,
             auth: {
                 username: this.config.username,
                 password: this.config.password
             },
-            timeout: this.config.isAwsMq ? 30000 : 10000 // Longer timeout for AWS MQ
+            timeout: 10000
         };
 
         this.httpClient = axios.create(clientOptions);
 
-        // Test connection to the API
         try {
-            // Try standard endpoint
-            try {
-                await this.httpClient.get('/api/overview');
-            } catch (error) {
-                // For AWS MQ, try root endpoint if standard fails
-                if (this.config.isAwsMq) {
-                    this.logger.info('Trying alternative endpoint for AWS MQ');
-                    await this.httpClient.get('/');
-                } else {
-                    throw error;
-                }
-            }
-
+            await this.httpClient.get('/api/overview');
             this.httpConnected = true;
             this.logger.info('Connected to RabbitMQ Management API');
             return true;
@@ -128,76 +105,122 @@ class RabbitMQAdmin {
      * @private
      */
     async _initializeAmqpClient() {
-        // Mask password in URL for logging
-        const maskedUrl = this.config.amqpUrl.replace(/(\/\/[^:]+:)([^@]+)(@)/, '$1***$3');
-        this.logger.info(`Connecting to RabbitMQ via AMQP: ${maskedUrl}`);
-
-        // CloudAMQP fix: Make sure we're using the right vhost 
-        // (CloudAMQP often uses the username as the vhost)
-        let amqpOptions = {};
-
-        // For CloudAMQP, the vhost is often the same as the username
-        if (this.config.isCloudAMQP) {
-            // Create a deep copy of the URL to avoid modifying the original
-            const amqpUrl = new URL(this.config.amqpUrl);
-
-            // Set the vhost to the username if not explicitly specified
-            if (amqpUrl.pathname === '/' || amqpUrl.pathname === '') {
-                amqpUrl.pathname = `/${amqpUrl.username}`;
-                this.logger.info(`CloudAMQP detected, setting vhost to username: ${amqpUrl.pathname}`);
-            }
-
-            try {
-                // Connect using the modified AMQP URL for CloudAMQP
-                this.amqpConnection = await amqp.connect(amqpUrl.toString(), amqpOptions);
-            } catch (error) {
-                // Log the error with details but without credentials
-                this.logger.error(`AMQP connection error to CloudAMQP: ${error.message}`);
-                throw error;
-            }
-        } else {
-            try {
-                // Connect using the direct AMQP URL from config for non-CloudAMQP
-                this.amqpConnection = await amqp.connect(this.config.amqpUrl, amqpOptions);
-            } catch (error) {
-                this.logger.error(`AMQP connection error: ${error.message}`);
-                throw error;
-            }
-        }
-
         try {
+            // Connect using the AMQP URL from config
+            this.amqpConnection = await amqp.connect(this.config.amqpUrl);
             this.amqpChannel = await this.amqpConnection.createChannel();
 
             // Set up event handlers
             this.amqpConnection.on('error', (err) => {
                 this.logger.error(`AMQP connection error: ${err.message}`);
                 this.amqpConnected = false;
-                this.useHttpOnly = true;
             });
 
             this.amqpConnection.on('close', () => {
                 this.logger.info('AMQP connection closed');
                 this.amqpConnected = false;
-                this.useHttpOnly = true;
             });
 
             this.amqpConnected = true;
             this.logger.info('Successfully connected to RabbitMQ via AMQP');
             return true;
         } catch (error) {
-            this.logger.error(`Failed to create AMQP channel: ${error.message}`);
+            this.logger.error(`Failed to connect to RabbitMQ via AMQP: ${error.message}`);
             this.amqpConnected = false;
-            this.useHttpOnly = true;
             throw error;
         }
     }
 
     /**
+     * Safely serialize an object to prevent circular references
+     * @param {Object} data - Data to serialize
+     * @returns {Object} Serialized data without circular references
+     * @private
+     */
+    _safeSerialize(data) {
+        if (!data) return null;
+
+        try {
+            return JSON.parse(JSON.stringify(data));
+        } catch (error) {
+            this.logger.error(`Serialization error: ${error.message}`);
+            return null;
+        }
+    }
+
+    /**
+     * Extract essential data from a queue object to prevent circular references
+     * @param {Object} queue - Queue object
+     * @returns {Object} Queue object with only essential properties
+     * @private
+     */
+    _extractQueueEssentials(queue) {
+        if (!queue) return null;
+
+        return {
+            name: queue.name,
+            vhost: queue.vhost,
+            durable: queue.durable,
+            auto_delete: queue.auto_delete,
+            exclusive: queue.exclusive,
+            state: queue.state,
+            consumers: queue.consumers || 0,
+            messages: queue.messages || 0,
+            messages_ready: queue.messages_ready || 0,
+            messages_unacknowledged: queue.messages_unacknowledged || 0,
+            memory: queue.memory,
+            message_stats: queue.message_stats ? {
+                publish: queue.message_stats.publish,
+                publish_details: queue.message_stats.publish_details ? {
+                    rate: queue.message_stats.publish_details.rate
+                } : undefined,
+                deliver: queue.message_stats.deliver,
+                deliver_details: queue.message_stats.deliver_details ? {
+                    rate: queue.message_stats.deliver_details.rate
+                } : undefined,
+                ack: queue.message_stats.ack,
+                ack_details: queue.message_stats.ack_details ? {
+                    rate: queue.message_stats.ack_details.rate
+                } : undefined
+            } : undefined
+        };
+    }
+
+    /**
+     * Extract essential data from an exchange object to prevent circular references
+     * @param {Object} exchange - Exchange object
+     * @returns {Object} Exchange object with only essential properties
+     * @private
+     */
+    _extractExchangeEssentials(exchange) {
+        if (!exchange) return null;
+
+        return {
+            name: exchange.name,
+            vhost: exchange.vhost,
+            type: exchange.type,
+            durable: exchange.durable,
+            auto_delete: exchange.auto_delete,
+            internal: exchange.internal,
+            message_stats: exchange.message_stats ? {
+                publish_in: exchange.message_stats.publish_in,
+                publish_in_details: exchange.message_stats.publish_in_details ? {
+                    rate: exchange.message_stats.publish_in_details.rate
+                } : undefined,
+                publish_out: exchange.message_stats.publish_out,
+                publish_out_details: exchange.message_stats.publish_out_details ? {
+                    rate: exchange.message_stats.publish_out_details.rate
+                } : undefined
+            } : undefined
+        };
+    }
+
+    /**
      * Check if AMQP channel is available
-     * @returns {boolean}
+     * @returns {boolean} Whether AMQP is connected
      */
     isAmqpConnected() {
-        return this.amqpConnected && this.amqpChannel && !this.useHttpOnly;
+        return this.amqpConnected && this.amqpChannel;
     }
 
     /**
@@ -208,15 +231,10 @@ class RabbitMQAdmin {
         this.router.use(express.json());
         this.router.use(express.urlencoded({ extended: true }));
 
-        // Security headers
-        this.router.use((req, res, next) => {
-            res.setHeader('X-Content-Type-Options', 'nosniff');
-            res.setHeader('X-Frame-Options', 'SAMEORIGIN');
-            res.setHeader('X-XSS-Protection', '1; mode=block');
-            next();
-        });
+        // CORS headers
+        this.router.use(cors());
 
-        // API routes
+        // Set up API routes
         this._setupApiRoutes();
     }
 
@@ -242,11 +260,48 @@ class RabbitMQAdmin {
 
                 // Enhance with AMQP data if available
                 if (this.isAmqpConnected()) {
-                    await this._enhanceQueuesWithAmqpData(data);
+                    await this._enhanceQueuesData(data);
                 }
 
                 res.json(data);
             } catch (error) {
+                res.status(500).json({ error: error.message });
+            }
+        });
+
+        // Individual queue API
+        this.router.get('/api/queues/:vhost/:name', async (req, res) => {
+            try {
+                const { vhost, name } = req.params;
+
+                // Fix double-encoding issue by decoding once if needed
+                const decodedVhost = vhost.includes('%') ? decodeURIComponent(vhost) : vhost;
+                const encodedVhost = encodeURIComponent(decodedVhost);
+                const encodedName = encodeURIComponent(name);
+
+                console.log(`Getting queue info for vhost: ${decodedVhost}, queue: ${name}`);
+                console.log(`API endpoint: /api/queues/${encodedVhost}/${encodedName}`);
+
+                const response = await this.httpClient.get(`/api/queues/${encodedVhost}/${encodedName}`);
+                let queue = response.data;
+
+                // Enhance with AMQP if available
+                if (this.isAmqpConnected()) {
+                    try {
+                        const queueInfo = await this.amqpChannel.checkQueue(name);
+                        queue.messages = queueInfo.messageCount;
+                        queue.consumers = queueInfo.consumerCount;
+
+                        // Add timestamp to queue info
+                        queue.last_checked = new Date().toISOString();
+                    } catch (e) {
+                        console.error(`Error checking queue via AMQP: ${e.message}`);
+                    }
+                }
+
+                res.json(queue);
+            } catch (error) {
+                console.error(`Error getting queue: ${error.message}`);
                 res.status(500).json({ error: error.message });
             }
         });
@@ -305,7 +360,6 @@ class RabbitMQAdmin {
                 if (this.isAmqpConnected()) {
                     try {
                         await this.amqpChannel.purgeQueue(name);
-                        this.logger.info(`Queue ${name} purged successfully via AMQP`);
                         res.json({ success: true, message: 'Queue purged successfully' });
                         return;
                     } catch (amqpError) {
@@ -316,10 +370,53 @@ class RabbitMQAdmin {
                 // Fall back to HTTP API
                 const encodedVhost = encodeURIComponent(vhost);
                 const endpoint = `/api/queues/${encodedVhost}/${name}/purge`;
-                await this.httpClient.post(endpoint);
+                await this.httpClient.delete(endpoint);
 
-                this.logger.info(`Queue ${name} purged successfully via HTTP API`);
                 res.json({ success: true, message: 'Queue purged successfully' });
+            } catch (error) {
+                res.status(500).json({ error: error.message });
+            }
+        });
+
+        // Publish message API
+        this.router.post('/api/exchanges/:vhost/:name/publish', async (req, res) => {
+            try {
+                const { vhost, name } = req.params;
+                const { routingKey, payload, properties } = req.body;
+
+                if (routingKey === undefined || payload === undefined) {
+                    return res.status(400).json({ error: 'Routing key and payload are required' });
+                }
+
+                // Try AMQP first if available
+                if (this.isAmqpConnected()) {
+                    try {
+                        const content = Buffer.from(
+                            typeof payload === 'string' ? payload : JSON.stringify(payload)
+                        );
+
+                        await this.amqpChannel.publish(name, routingKey, content, properties || {});
+
+                        res.json({ success: true, message: 'Message published successfully' });
+                        return;
+                    } catch (amqpError) {
+                        this.logger.warn(`Error publishing message via AMQP: ${amqpError.message}. Falling back to HTTP.`);
+                    }
+                }
+
+                // Fall back to HTTP API
+                const encodedVhost = encodeURIComponent(vhost);
+                const endpoint = `/api/exchanges/${encodedVhost}/${name}/publish`;
+
+                const data = {
+                    properties: properties || {},
+                    routing_key: routingKey,
+                    payload: typeof payload === 'string' ? payload : JSON.stringify(payload),
+                    payload_encoding: 'string'
+                };
+
+                await this.httpClient.post(endpoint, data);
+                res.json({ success: true, message: 'Message published successfully' });
             } catch (error) {
                 res.status(500).json({ error: error.message });
             }
@@ -343,57 +440,13 @@ class RabbitMQAdmin {
             res.json(health);
         });
 
-        // Publish message API
-        this.router.post('/api/exchanges/:vhost/:name/publish', async (req, res) => {
-            try {
-                const { vhost, name } = req.params;
-                const { routingKey, payload, properties } = req.body;
-
-                if (routingKey === undefined || payload === undefined) {
-                    return res.status(400).json({ error: 'Routing key and payload are required' });
-                }
-
-                // Try AMQP first if available
-                if (this.isAmqpConnected()) {
-                    try {
-                        const content = Buffer.from(
-                            typeof payload === 'string' ? payload : JSON.stringify(payload)
-                        );
-
-                        await this.amqpChannel.publish(name, routingKey, content, properties || {});
-
-                        this.logger.info(`Message published to exchange ${name} with routing key ${routingKey} via AMQP`);
-                        res.json({ success: true, message: 'Message published successfully' });
-                        return;
-                    } catch (amqpError) {
-                        this.logger.warn(`Error publishing message via AMQP: ${amqpError.message}. Falling back to HTTP.`);
-                    }
-                }
-
-                // Fall back to HTTP API
-                const encodedVhost = encodeURIComponent(vhost);
-                const endpoint = `/api/exchanges/${encodedVhost}/${name}/publish`;
-
-                const data = {
-                    properties: properties || {},
-                    routing_key: routingKey,
-                    payload: typeof payload === 'string' ? payload : JSON.stringify(payload),
-                    payload_encoding: 'string'
-                };
-
-                const result = await this.httpClient.post(endpoint, data);
-                this.logger.info(`Message published to exchange ${name} with routing key ${routingKey} via HTTP API`);
-                res.json(result.data);
-            } catch (error) {
-                res.status(500).json({ error: error.message });
-            }
-        });
+        this._setupQueueInfoApi();
     }
 
     /**
      * Fetch data from RabbitMQ API with caching
      * @param {string} endpoint - API endpoint
-     * @param {string} cacheKey - Cache key for storing results
+     * @param {string} cacheKey - Cache key
      * @param {number} cacheTTL - Cache time-to-live in milliseconds
      * @returns {Promise<Object>} API response data
      */
@@ -450,7 +503,7 @@ class RabbitMQAdmin {
 
     /**
      * Get messages from a queue via AMQP
-     * @param {string} vhost - Virtual host (ignored, using connection's vhost)
+     * @param {string} vhost - Virtual host
      * @param {string} queueName - Queue name
      * @param {number} count - Maximum number of messages to get
      * @returns {Promise<Array>} Array of messages
@@ -483,10 +536,14 @@ class RabbitMQAdmin {
                 // Not JSON, keep as string
             }
 
+            // Current timestamp if not provided in properties
+            const timestamp = msg.properties.timestamp || Date.now();
+
             messages.push({
                 payload: content,
                 properties: {
-                    ...msg.properties
+                    ...msg.properties,
+                    timestamp: timestamp
                 },
                 redelivered: msg.fields.redelivered,
                 routing_key: msg.fields.routingKey,
@@ -498,37 +555,86 @@ class RabbitMQAdmin {
     }
 
     /**
+     * Get queue information API endpoint
+     * @private
+     */
+    _setupQueueInfoApi() {
+        // Get detailed queue information
+        this.router.get('/api/queues/:vhost/:name/info', async (req, res) => {
+            try {
+                const { vhost, name } = req.params;
+                const encodedVhost = encodeURIComponent(vhost);
+                const encodedName = encodeURIComponent(name);
+
+                // Get basic queue info from API
+                const queueResponse = await this.httpClient.get(`/api/queues/${encodedVhost}/${encodedName}`);
+                let queueInfo = queueResponse.data;
+
+                // If AMQP is available, enhance with real-time data
+                if (this.isAmqpConnected()) {
+                    try {
+                        const amqpQueueInfo = await this.amqpChannel.checkQueue(name);
+
+                        // Enhance with more accurate message count and consumer count
+                        queueInfo.messages = amqpQueueInfo.messageCount;
+                        queueInfo.consumers = amqpQueueInfo.consumerCount;
+
+                        // Add some extra stats
+                        queueInfo.stats = {
+                            last_checked: new Date().toISOString(),
+                            connection_type: 'amqp+http',
+                            uptime: this.processUptime ? process.uptime() * 1000 : null
+                        };
+                    } catch (amqpError) {
+                        this.logger.warn(`Error enhancing queue info via AMQP: ${amqpError.message}`);
+                        // Add fallback stats
+                        queueInfo.stats = {
+                            last_checked: new Date().toISOString(),
+                            connection_type: 'http-only',
+                            error: 'AMQP connection not available for enhanced data'
+                        };
+                    }
+                }
+
+                res.json(queueInfo);
+            } catch (error) {
+                this.logger.error(`Error getting queue info: ${error.message}`);
+                res.status(500).json({ error: error.message });
+            }
+        });
+    }
+
+    /**
      * Enhance queue data with AMQP information
      * @param {Array} queues - Array of queue objects
      * @private
      */
-    async _enhanceQueuesWithAmqpData(queues) {
-        if (!this.isAmqpConnected() || !queues.length) return;
+    async _enhanceQueuesData(queues) {
+        if (!this.isAmqpConnected() || !queues || !queues.length) {
+            return;
+        }
 
-        // Process queues in batches to avoid overwhelming the server
-        const batchSize = 10;
+        // Process queues in smaller batches to avoid overwhelming the server
+        const batchSize = 5;
+
         for (let i = 0; i < queues.length; i += batchSize) {
             const batch = queues.slice(i, i + batchSize);
 
             await Promise.all(batch.map(async (queue) => {
                 try {
+                    // Get queue info via AMQP - just simple stats
                     const queueInfo = await this.amqpChannel.checkQueue(queue.name);
 
-                    // Update queue with AMQP data
+                    // Update only simple numeric properties
                     queue.messages = queueInfo.messageCount;
                     queue.consumers = queueInfo.consumerCount;
-                    queue.messages_details = {
-                        ...queue.messages_details,
-                        current: queueInfo.messageCount
-                    };
-                    queue.idle = queueInfo.consumerCount === 0 && queueInfo.messageCount === 0;
 
-                    // Initialize message_stats if not present
+                    // Be careful with nested objects
                     if (!queue.message_stats) {
                         queue.message_stats = {};
                     }
                 } catch (error) {
-                    // Skip this queue if it can't be enhanced
+                    // Skip errors for individual queues
                 }
             }));
         }
@@ -544,7 +650,6 @@ class RabbitMQAdmin {
         }
 
         this.io = socketIo(this.server, {
-            path: `${this.config.basePath}socket.io`.replace(/\/+/g, '/'),
             cors: {
                 origin: '*',
                 methods: ['GET', 'POST']
@@ -556,20 +661,32 @@ class RabbitMQAdmin {
             this.connectedClients.add(socket.id);
 
             // Send initial connection status
-            socket.emit('connection-status', {
-                http: this.httpConnected,
-                amqp: this.isAmqpConnected(),
-                timestamp: new Date().toISOString()
+            this._sendConnectionStatus(socket);
+
+            // Set up request handler
+            socket.on('request-data', (type) => {
+                this._handleDataRequest(socket, type);
             });
 
-            // Start sending updates
-            this._startSendingUpdates(socket);
+            // Set up lightweight periodic updates
+            const intervalId = setInterval(() => {
+                try {
+                    this._sendLightweightUpdates(socket);
+                } catch (error) {
+                    this.logger.error(`Error in periodic update: ${error.message}`);
+                    // Optionally notify the client of the error
+                    socket.emit('error', { message: 'Internal server error during update' });
+                }
+            }, this.config.refreshInterval);
+
+            // Store the interval for cleanup
+            this.updateIntervals.set(socket.id, intervalId);
 
             socket.on('disconnect', () => {
                 this.logger.info(`Client disconnected: ${socket.id}`);
                 this.connectedClients.delete(socket.id);
 
-                // Clear update interval
+                // Clear interval
                 if (this.updateIntervals.has(socket.id)) {
                     clearInterval(this.updateIntervals.get(socket.id));
                     this.updateIntervals.delete(socket.id);
@@ -581,60 +698,248 @@ class RabbitMQAdmin {
     }
 
     /**
-     * Start sending periodic updates to a client
+     * Send connection status to client
      * @param {Object} socket - Socket.IO socket
      * @private
      */
-    _startSendingUpdates(socket) {
-        // Function to fetch and send data
-        const sendUpdates = async () => {
+    _sendConnectionStatus(socket) {
+        try {
+            // Create a new simple object with only primitive values
+            // This breaks any circular references that might exist
+            const status = {
+                http: Boolean(this.httpConnected),
+                amqp: Boolean(this.isAmqpConnected()),
+                timestamp: new Date().toISOString()
+            };
+
+            // Send the safe status object
+            socket.emit("connection-status", status);
+
+            // Log successful transmission
+            this.logger.debug(`Sent connection status to client ${socket.id}: HTTP=${status.http}, AMQP=${status.amqp}`);
+        } catch (error) {
+            this.logger.error(`Error sending connection status: ${error.message}`);
+
+            // Try to send a basic version if the detailed one fails
             try {
-                // Fetch overview, queues and exchanges data
-                const [overview, queues, exchanges] = await Promise.all([
-                    this.fetchFromRabbitMQ('/api/overview', 'overview'),
-                    this.fetchFromRabbitMQ('/api/queues', 'queues'),
-                    this.fetchFromRabbitMQ('/api/exchanges', 'exchanges')
-                ]);
+                socket.emit("connection-status", {
+                    http: Boolean(this.httpConnected),
+                    amqp: false,
+                    timestamp: new Date().toISOString(),
+                    error: "Connection status error"
+                });
+            } catch (backupError) {
+                this.logger.error(`Failed to send backup connection status: ${backupError.message}`);
+            }
+        }
+    }
 
-                // If we have an AMQP connection, enhance the queue data
-                if (this.isAmqpConnected()) {
-                    await this._enhanceQueuesWithAmqpData(queues);
-                }
+    /**
+     * Send lightweight updates to client
+     * @param {Object} socket - Socket.IO socket
+     * @private
+     */
+    async _sendLightweightUpdates(socket) {
+        try {
+            // Always send connection status
+            this._sendConnectionStatus(socket);
 
-                // Send to client
+            // Send lightweight queue data
+            try {
+                const queues = await this.fetchFromRabbitMQ('/api/queues', 'queues');
+
+                // Map to essential data only
+                const lightQueueData = queues.map(queue => ({
+                    name: queue.name,
+                    vhost: queue.vhost,
+                    state: queue.state,
+                    messages: queue.messages,
+                    consumers: queue.consumers
+                }));
+
                 socket.emit('rabbitmq-data', {
-                    overview,
-                    queues,
-                    exchanges,
-                    connectionStatus: {
-                        http: this.httpConnected,
-                        amqp: this.isAmqpConnected(),
-                        timestamp: new Date().toISOString()
-                    }
+                    queues: lightQueueData,
+                    timestamp: new Date().toISOString()
                 });
             } catch (error) {
-                // Send error to client
-                socket.emit('rabbitmq-error', {
-                    message: error.message,
-                    connectionStatus: {
-                        http: this.httpConnected,
-                        amqp: this.isAmqpConnected(),
-                        timestamp: new Date().toISOString()
-                    }
-                });
+                this.logger.debug(`Error sending lightweight queue data: ${error.message}`);
             }
-        };
+        } catch (error) {
+            this.logger.error(`Error in lightweight updates: ${error.message}`);
+        }
+    }
 
-        // Initial data
-        sendUpdates().catch(() => { });
+    /**
+     * Handle data request from client
+     * @param {Object} socket - Socket.IO socket
+     * @param {string} type - Type of data requested
+     * @private
+     */
+    async _handleDataRequest(socket, type) {
+        try {
+            switch (type) {
+                case 'overview':
+                    await this._sendOverviewData(socket);
+                    break;
 
-        // Set up interval for regular updates
-        const intervalId = setInterval(() => {
-            sendUpdates().catch(() => { });
-        }, this.config.refreshInterval);
+                case 'queues':
+                    await this._sendQueuesData(socket);
+                    break;
 
-        // Store interval ID for cleanup
-        this.updateIntervals.set(socket.id, intervalId);
+                case 'exchanges':
+                    await this._sendExchangesData(socket);
+                    break;
+
+                case 'bindings':
+                    await this._sendBindingsData(socket);
+                    break;
+
+                case 'all':
+                    // Send each type separately to avoid large objects
+                    await this._sendOverviewData(socket);
+                    await this._sendQueuesData(socket);
+                    await this._sendExchangesData(socket);
+                    break;
+
+                default:
+                    this.logger.warn(`Unknown data type requested: ${type}`);
+            }
+        } catch (error) {
+            this.logger.error(`Error handling data request for ${type}: ${error.message}`);
+            socket.emit('rabbitmq-error', {
+                message: error.message,
+                timestamp: new Date().toISOString()
+            });
+        }
+    }
+
+    /**
+     * Send overview data to client
+     * @param {Object} socket - Socket.IO socket
+     * @private
+     */
+    async _sendOverviewData(socket) {
+        try {
+            const overview = await this.fetchFromRabbitMQ('/api/overview', 'overview');
+
+            // Get system uptime from node process if available
+            const processUptime = process.uptime() * 1000; // Convert to milliseconds
+
+            // Create an enhanced overview with uptime information
+            const enhancedOverview = {
+                ...overview,
+                // Add uptime in milliseconds (if not already present)
+                uptime: overview.uptime || processUptime,
+                // Also add a more explicit property name as a backup
+                uptime_in_ms: overview.uptime || processUptime,
+                // Server information additional fields
+                server_info: {
+                    ...(overview.server_info || {}),
+                    process_uptime_ms: processUptime,
+                    start_time: new Date(Date.now() - processUptime).toISOString()
+                }
+            };
+
+            // Create a simplified version with only what's needed
+            const simpleOverview = {
+                rabbitmq_version: enhancedOverview.rabbitmq_version,
+                erlang_version: enhancedOverview.erlang_version,
+                uptime: enhancedOverview.uptime,
+                uptime_in_ms: enhancedOverview.uptime_in_ms,
+                server_info: enhancedOverview.server_info,
+                queue_totals: enhancedOverview.queue_totals,
+                object_totals: enhancedOverview.object_totals,
+                message_stats: enhancedOverview.message_stats ? {
+                    publish: enhancedOverview.message_stats.publish,
+                    publish_details: enhancedOverview.message_stats.publish_details ? {
+                        rate: enhancedOverview.message_stats.publish_details.rate
+                    } : undefined,
+                    deliver: enhancedOverview.message_stats.deliver,
+                    deliver_details: enhancedOverview.message_stats.deliver_details ? {
+                        rate: enhancedOverview.message_stats.deliver_details.rate
+                    } : undefined
+                } : undefined
+            };
+
+            socket.emit('rabbitmq-data', {
+                overview: simpleOverview,
+                timestamp: new Date().toISOString()
+            });
+        } catch (error) {
+            this.logger.error(`Error sending overview data: ${error.message}`);
+            socket.emit('rabbitmq-error', {
+                message: `Failed to fetch overview data: ${error.message}`,
+                timestamp: new Date().toISOString()
+            });
+        }
+    }
+
+    /**
+     * Send queues data to client
+     * @param {Object} socket - Socket.IO socket
+     * @private
+     */
+    async _sendQueuesData(socket) {
+        try {
+            const queues = await this.fetchFromRabbitMQ('/api/queues', 'queues');
+
+            // Enhance with AMQP data if available
+            if (this.isAmqpConnected()) {
+                await this._enhanceQueuesData(queues);
+            }
+
+            // Extract essential data
+            const essentialQueues = queues.map(queue => this._extractQueueEssentials(queue));
+
+            socket.emit('rabbitmq-data', {
+                queues: essentialQueues,
+                timestamp: new Date().toISOString()
+            });
+        } catch (error) {
+            this.logger.error(`Error sending queues data: ${error.message}`);
+            throw error;
+        }
+    }
+
+    /**
+     * Send exchanges data to client
+     * @param {Object} socket - Socket.IO socket
+     * @private
+     */
+    async _sendExchangesData(socket) {
+        try {
+            const exchanges = await this.fetchFromRabbitMQ('/api/exchanges', 'exchanges');
+
+            // Extract essential data
+            const essentialExchanges = exchanges.map(exchange => this._extractExchangeEssentials(exchange));
+
+            socket.emit('rabbitmq-data', {
+                exchanges: essentialExchanges,
+                timestamp: new Date().toISOString()
+            });
+        } catch (error) {
+            this.logger.error(`Error sending exchanges data: ${error.message}`);
+            throw error;
+        }
+    }
+
+    /**
+     * Send bindings data to client
+     * @param {Object} socket - Socket.IO socket
+     * @private
+     */
+    async _sendBindingsData(socket) {
+        try {
+            const bindings = await this.fetchFromRabbitMQ('/api/bindings', 'bindings');
+
+            socket.emit('rabbitmq-data', {
+                bindings,
+                timestamp: new Date().toISOString()
+            });
+        } catch (error) {
+            this.logger.error(`Error sending bindings data: ${error.message}`);
+            throw error;
+        }
     }
 
     /**
@@ -648,21 +953,8 @@ class RabbitMQAdmin {
         // Create a new Express application
         this.app = express();
 
-        // Security headers
-        this.app.use((req, res, next) => {
-            res.setHeader('X-Content-Type-Options', 'nosniff');
-            res.setHeader('X-Frame-Options', 'SAMEORIGIN');
-            res.setHeader('X-XSS-Protection', '1; mode=block');
-            next();
-        });
-
         // Mount the router
         this.app.use(this.config.basePath, this.router);
-
-        // Add 404 handler for unmatched routes
-        this.app.use((req, res) => {
-            res.status(404).json({ error: 'Not Found' });
-        });
 
         // Create HTTP server
         this.server = http.createServer(this.app);
@@ -716,13 +1008,6 @@ class RabbitMQAdmin {
         // Mount the router
         this.app.use(this.config.basePath, this.router);
 
-        // Enable CORS for the API
-        this.app.use(cors({
-            origin: '*',
-            methods: ['GET', 'POST', 'PUT', 'DELETE'],
-            allowedHeaders: ['Content-Type', 'Authorization']
-        }));
-
         // Setup WebSockets if server is provided
         if (appServer) {
             this.server = appServer;
@@ -757,11 +1042,6 @@ class RabbitMQAdmin {
                 clearInterval(intervalId);
             }
             this.updateIntervals.clear();
-
-            // Close IO server
-            await new Promise(resolve => {
-                this.io.close(() => resolve());
-            });
         }
 
         // Close AMQP connection

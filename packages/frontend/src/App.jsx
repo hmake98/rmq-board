@@ -1,6 +1,6 @@
-import React from "react";
+import React, { useEffect } from "react";
 import { BrowserRouter as Router, Routes, Route } from "react-router-dom";
-import { ConfigProvider, theme } from "antd";
+import { ConfigProvider, theme, notification } from "antd";
 import { SocketProvider } from "./context/SocketContext";
 import MainLayout from "./layouts/MainLayout";
 
@@ -20,6 +20,15 @@ const App = () => {
     "(prefers-color-scheme: dark)"
   ).matches;
 
+  // Configure notifications
+  useEffect(() => {
+    notification.config({
+      placement: "topRight",
+      duration: 3,
+      maxCount: 3,
+    });
+  }, []);
+
   return (
     <ConfigProvider
       theme={{
@@ -28,6 +37,21 @@ const App = () => {
           : theme.defaultAlgorithm,
         token: {
           colorPrimary: "#ff6600",
+          borderRadius: 4,
+        },
+        components: {
+          Table: {
+            borderRadius: 4,
+          },
+          Card: {
+            borderRadius: 4,
+          },
+          Modal: {
+            borderRadiusLG: 4,
+          },
+          Drawer: {
+            borderRadius: 4,
+          },
         },
       }}
     >
