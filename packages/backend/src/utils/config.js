@@ -1,7 +1,12 @@
 // src/utils/config.js
 /**
- * Load configuration from environment variables with smart defaults
- * @returns {Object} Configuration object
+ * Loads application configuration from environment variables, applying defaults for missing values.
+ *
+ * Retrieves and parses the RabbitMQ connection URL, extracting connection details and determining SSL usage. Constructs a management URL and returns a configuration object containing connection, server, and logging settings.
+ *
+ * @returns {Object} An object with connection details, server settings, and logging configuration.
+ *
+ * @remark If the `RABBITMQ_URL` environment variable is invalid, a default local URL is used instead.
  */
 function loadConfig() {
     // Get the RabbitMQ URL - this is the only required parameter

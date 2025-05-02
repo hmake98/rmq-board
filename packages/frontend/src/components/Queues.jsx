@@ -235,7 +235,12 @@ const Queues = () => {
     }
   }, [socket, searchText, fetchQueues]);
 
-  // Helper to determine queue health status
+  /**
+   * Determines the health status of a RabbitMQ queue based on its state, consumer count, and message count.
+   *
+   * @param {Object} queue - The queue object to evaluate.
+   * @returns {string} Returns "error" if the queue is not running or missing state, "warning" if there are messages but no consumers, or "success" if the queue is running with consumers or no messages.
+   */
   function getQueueHealthStatus(queue) {
     if (!queue || !queue.state) return "error";
 
@@ -248,7 +253,14 @@ const Queues = () => {
     return "success";
   }
 
-  // Helper to format rate
+  /**
+   * Formats a numeric rate value to a string with two decimal places.
+   *
+   * Returns "0.00" if the input is undefined, null, or cannot be converted to a number.
+   *
+   * @param {number|string} rate - The rate value to format.
+   * @returns {string} The formatted rate as a string with two decimal places.
+   */
   function formatRate(rate) {
     if (rate === undefined || rate === null) return "0.00";
     try {
