@@ -18,6 +18,12 @@ A modern, intuitive, and lightweight admin UI for RabbitMQ, designed to make mon
 - **Easy Integration** - Mount as middleware in existing Express.js applications
 - **Docker Ready** - Simple deployment alongside RabbitMQ
 
+## 🖼️ Screenshots
+
+![Dashboard Screenshot](https://raw.githubusercontent.com/hmake98/rmq-board/main/screenshots/dashboard.png)
+![Queue Management Screenshot](https://raw.githubusercontent.com/hmake98/rmq-board/main/screenshots/queues.png)
+![Message Publishing Screenshot](https://raw.githubusercontent.com/hmake98/rmq-board/main/screenshots/publish.png)
+
 ## 🚀 Quick Start with Docker
 
 The easiest way to get started is using Docker Compose:
@@ -46,21 +52,18 @@ services:
       - rabbitmq_data:/var/lib/rabbitmq
 
   rmq-board:
-    image: rmq-board:latest
+    image: hmake98/rmq-board:latest
     ports:
-      - "3000:80"
+      - "3000:8080"
     environment:
       - RABBITMQ_URL=amqp://guest:guest@rabbitmq:5672/
       - SSL_VERIFY=false
       - REFRESH_INTERVAL=5000
-      - VITE_API_URL=http://localhost:3001/api
-      - VITE_SOCKET_URL=http://localhost:3001
-      - VITE_APP_TITLE=RMQ Board
     depends_on:
       rabbitmq:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost/health.html"]
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health.html"]
       interval: 10s
       timeout: 5s
       retries: 3
@@ -84,7 +87,7 @@ For local development:
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/rmq-board.git
+git clone https://github.com/hmake98/rmq-board.git
 cd rmq-board
 
 # Install dependencies
@@ -129,6 +132,29 @@ RMQ Board consists of:
 2. **React Frontend** - Modern interface built with React and Ant Design
 3. **AMQP Client** - Direct connection to RabbitMQ for reliable operations
 4. **HTTP Client** - Connection to RabbitMQ Management API for enhanced functionality
+
+### Project Structure
+
+```
+rmq-board/
+├── packages/
+│   ├── backend/           # Express.js backend
+│   │   ├── src/           # Source code
+│   │   │   ├── lib/       # Core libraries
+│   │   │   ├── utils/     # Utility functions
+│   │   │   └── index.js   # Entry point
+│   │   └── server.js      # Server setup
+│   └── frontend/          # React frontend
+│       ├── src/           # Source code
+│       │   ├── components/# UI components
+│       │   ├── context/   # React context providers
+│       │   ├── layouts/   # Layout components
+│       │   ├── services/  # API services
+│       │   └── utils/     # Utility functions
+│       └── index.html     # HTML entry
+├── examples/              # Example usage and demos
+└── docker-compose.yml     # Docker configuration
+```
 
 ## 🔌 Integration
 
@@ -192,7 +218,7 @@ RMQ Board exposes a REST API that you can use to integrate with other tools:
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/rmq-board.git
+git clone https://github.com/hmake98/rmq-board.git
 cd rmq-board
 
 # Install dependencies
@@ -217,9 +243,25 @@ docker build -t rmq-board .
 docker-compose build
 ```
 
+## 🔧 Testing
+
+The repository includes example scripts to help you test and demonstrate the dashboard's functionality:
+
+```bash
+# Run the test message generator
+cd examples
+node main.js
+```
+
+This will create various exchanges, queues, and publish different types of messages to help you test all features of the dashboard.
+
+## 📱 Mobile Support
+
+RMQ Board is fully responsive and works on mobile devices. The UI adapts to different screen sizes, making it easy to monitor your RabbitMQ instances on the go.
+
 ## 📝 License
 
-MIT
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
 ## 🤝 Contributing
 
@@ -230,3 +272,16 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 3. Commit your changes (`git commit -m 'Add some amazing feature'`)
 4. Push to the branch (`git push origin feature/amazing-feature`)
 5. Open a Pull Request
+
+## 🙏 Acknowledgements
+
+- [RabbitMQ](https://www.rabbitmq.com/) - For the amazing message broker
+- [React](https://reactjs.org/) - For the frontend framework
+- [Express](https://expressjs.com/) - For the backend framework
+- [Ant Design](https://ant.design/) - For the UI components
+- [Socket.IO](https://socket.io/) - For real-time updates
+
+## 📧 Contact
+
+- GitHub: [@hmake98](https://github.com/hmake98)
+- Issue Tracker: [GitHub Issues](https://github.com/hmake98/rmq-board/issues)
