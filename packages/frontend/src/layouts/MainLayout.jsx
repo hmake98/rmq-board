@@ -20,6 +20,8 @@ import {
   MenuUnfoldOutlined,
   GithubOutlined,
   InfoCircleOutlined,
+  BugOutlined,
+  HeartOutlined,
 } from "@ant-design/icons";
 import { useSocket } from "../context/SocketContext";
 
@@ -110,6 +112,19 @@ const MainLayout = () => {
       key: "/publish",
       icon: <SendOutlined />,
       label: "Publish Message",
+    },
+    {
+      type: "divider",
+    },
+    {
+      key: "/debug",
+      icon: <BugOutlined />,
+      label: "Debug Panel",
+    },
+    {
+      key: "/health",
+      icon: <HeartOutlined />,
+      label: "Health Monitor",
     },
   ];
 

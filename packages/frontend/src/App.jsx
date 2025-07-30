@@ -10,6 +10,8 @@ import Queues from "./components/Queues";
 import Exchanges from "./components/Exchanges";
 import Bindings from "./components/Bindings";
 import PublishMessage from "./components/PublishMessage";
+import DebugPanel from "./components/DebugPanel";
+import HealthMonitor from "./components/HealthMonitor";
 
 // Import styles
 import "./App.css";
@@ -64,6 +66,8 @@ const App = () => {
               <Route path="exchanges" element={<Exchanges />} />
               <Route path="bindings" element={<Bindings />} />
               <Route path="publish" element={<PublishMessage />} />
+              <Route path="debug" element={<DebugPanel />} />
+              <Route path="health" element={<HealthMonitor />} />
             </Route>
           </Routes>
         </Router>

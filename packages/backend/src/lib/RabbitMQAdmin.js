@@ -6,6 +6,8 @@ const amqp = require('amqplib');
 const axios = require('axios');
 const cors = require('cors');
 const { loadConfig } = require('../utils/config');
+const Debugger = require('./Debugger');
+const HealthMonitor = require('./HealthMonitor');
 
 /**
  * RabbitMQ Admin UI for monitoring and managing RabbitMQ servers
@@ -22,6 +24,22 @@ class RabbitMQAdmin {
 
         // Set up logger
         this.logger = options.logger || console;
+
+        // Initialize debugging and health monitoring
+        this.debugger = new Debugger({
+            config: this.config,
+            logger: this.logger,
+            enabled: this.config.debugEnabled !== false,
+            debugLevel: this.config.debugLevel || 'detailed'
+        });
+
+        this.healthMonitor = new HealthMonitor({
+            config: this.config,
+            logger: this.logger,
+            debugger: this.debugger,
+            healthCheckInterval: this.config.healthCheckInterval || 30000,
+            performanceCheckInterval: this.config.performanceCheckInterval || 60000
+        });
 
         // Initialize state
         this.app = null;
@@ -47,6 +65,15 @@ class RabbitMQAdmin {
             lastUpdated: {}
         };
 
+        // Enhanced monitoring state
+        this.monitoringState = {
+            startTime: new Date(),
+            totalRequests: 0,
+            successfulRequests: 0,
+            failedRequests: 0,
+            averageResponseTime: 0
+        };
+
         // Set up routes
         this.setupRoutes();
     }
@@ -56,6 +83,16 @@ class RabbitMQAdmin {
      */
     async initialize() {
         try {
+            this.debugger.logConnectionAttempt({
+                url: this.config.rabbitMQUrl,
+                protocol: this.config.sslEnabled ? 'amqps' : 'amqp',
+                host: this.config.host,
+                port: this.config.port,
+                vhost: this.config.vhost,
+                sslEnabled: this.config.sslEnabled,
+                retryCount: 0
+            });
+
             // Initialize HTTP client
             await this._initializeHttpClient();
 
@@ -64,11 +101,27 @@ class RabbitMQAdmin {
                 await this._initializeAmqpClient();
             } catch (error) {
                 this.logger.warn(`AMQP connection failed: ${error.message}. Using HTTP-only mode.`);
+                this.debugger.logConnectionFailure({
+                    message: error.message,
+                    code: error.code,
+                    stack: error.stack,
+                    url: this.config.amqpUrl,
+                    retryCount: 0,
+                    attemptNumber: 1
+                });
             }
+
+            // Start health monitoring
+            this.healthMonitor.start();
+
+            // Set up health monitor with clients
+            this.healthMonitor.config.httpClient = this.httpClient;
+            this.healthMonitor.config.amqpClient = this.amqpConnection;
 
             return true;
         } catch (error) {
             this.logger.error(`Failed to initialize RabbitMQ connections: ${error.message}`);
+            this.debugger.logError(error, { context: 'initialization' });
             throw error;
         }
     }
@@ -89,13 +142,70 @@ class RabbitMQAdmin {
 
         this.httpClient = axios.create(clientOptions);
 
+        // Add request/response interceptors for debugging
+        this.httpClient.interceptors.request.use(
+            (config) => {
+                const debugComplete = this.debugger.logHttpOperation({
+                    method: config.method,
+                    url: config.url,
+                    headers: config.headers,
+                    body: config.data
+                });
+
+                // Store debug complete function for response
+                config.debugComplete = debugComplete;
+                return config;
+            },
+            (error) => {
+                this.debugger.logError(error, { context: 'http_request' });
+                return Promise.reject(error);
+            }
+        );
+
+        this.httpClient.interceptors.response.use(
+            (response) => {
+                if (response.config.debugComplete) {
+                    response.config.debugComplete(response);
+                }
+                return response;
+            },
+            (error) => {
+                if (error.config && error.config.debugComplete) {
+                    error.config.debugComplete(error.response || error);
+                }
+                return Promise.reject(error);
+            }
+        );
+
         try {
+            const startTime = Date.now();
             await this.httpClient.get('/api/overview');
+            const connectionTime = Date.now() - startTime;
+            
             this.httpConnected = true;
             this.logger.info('Connected to RabbitMQ Management API');
+            
+            this.debugger.logSuccessfulConnection({
+                url: this.config.rabbitMQUrl,
+                protocol: 'http',
+                host: this.config.host,
+                port: this.config.port,
+                vhost: this.config.vhost,
+                connectionTime,
+                channelCreated: false
+            });
+            
             return true;
         } catch (error) {
             this.httpConnected = false;
+            this.debugger.logConnectionFailure({
+                message: error.message,
+                code: error.code,
+                stack: error.stack,
+                url: this.config.rabbitMQUrl,
+                retryCount: 0,
+                attemptNumber: 1
+            });
             throw error;
         }
     }
@@ -440,7 +550,172 @@ class RabbitMQAdmin {
             res.json(health);
         });
 
+        // Enhanced debugging and monitoring endpoints
+        this._setupDebuggingRoutes();
+        this._setupHealthMonitoringRoutes();
+
         this._setupQueueInfoApi();
+    }
+
+    /**
+     * Set up debugging routes
+     * @private
+     */
+    _setupDebuggingRoutes() {
+        // Debug information endpoint
+        this.router.get('/api/debug', (req, res) => {
+            try {
+                const debugInfo = this.debugger.getRealTimeDebugInfo();
+                res.json(debugInfo);
+            } catch (error) {
+                res.status(500).json({ error: error.message });
+            }
+        });
+
+        // Comprehensive debug report
+        this.router.get('/api/debug/report', (req, res) => {
+            try {
+                const debugReport = this.debugger.getDebugReport();
+                res.json(debugReport);
+            } catch (error) {
+                res.status(500).json({ error: error.message });
+            }
+        });
+
+        // Debug session information
+        this.router.get('/api/debug/session', (req, res) => {
+            try {
+                res.json({
+                    sessionId: this.debugger.sessionInfo.sessionId,
+                    startTime: this.debugger.sessionInfo.startTime,
+                    uptime: Date.now() - this.debugger.sessionInfo.startTime.getTime(),
+                    isEnabled: this.debugger.isEnabled,
+                    debugLevel: this.debugger.debugLevel
+                });
+            } catch (error) {
+                res.status(500).json({ error: error.message });
+            }
+        });
+
+        // Enable/disable debugging
+        this.router.post('/api/debug/enable', (req, res) => {
+            try {
+                const { enabled } = req.body;
+                this.debugger.setEnabled(enabled);
+                res.json({ 
+                    success: true, 
+                    enabled: this.debugger.isEnabled,
+                    message: `Debugging ${enabled ? 'enabled' : 'disabled'}`
+                });
+            } catch (error) {
+                res.status(500).json({ error: error.message });
+            }
+        });
+
+        // Set debug level
+        this.router.post('/api/debug/level', (req, res) => {
+            try {
+                const { level } = req.body;
+                this.debugger.setDebugLevel(level);
+                res.json({ 
+                    success: true, 
+                    level: this.debugger.debugLevel,
+                    message: `Debug level set to: ${level}`
+                });
+            } catch (error) {
+                res.status(500).json({ error: error.message });
+            }
+        });
+
+        // Clear debug data
+        this.router.post('/api/debug/clear', (req, res) => {
+            try {
+                this.debugger.clearDebugData();
+                res.json({ 
+                    success: true, 
+                    message: 'Debug data cleared'
+                });
+            } catch (error) {
+                res.status(500).json({ error: error.message });
+            }
+        });
+    }
+
+    /**
+     * Set up health monitoring routes
+     * @private
+     */
+    _setupHealthMonitoringRoutes() {
+        // Enhanced health status
+        this.router.get('/api/health/status', (req, res) => {
+            try {
+                const healthStatus = this.healthMonitor.getRealTimeStatus();
+                res.json(healthStatus);
+            } catch (error) {
+                res.status(500).json({ error: error.message });
+            }
+        });
+
+        // Comprehensive health report
+        this.router.get('/api/health/report', (req, res) => {
+            try {
+                const healthReport = this.healthMonitor.getHealthReport();
+                res.json(healthReport);
+            } catch (error) {
+                res.status(500).json({ error: error.message });
+            }
+        });
+
+        // Alert statistics
+        this.router.get('/api/health/alerts', (req, res) => {
+            try {
+                const alertStats = this.healthMonitor.getAlertStatistics();
+                res.json(alertStats);
+            } catch (error) {
+                res.status(500).json({ error: error.message });
+            }
+        });
+
+        // Update alert thresholds
+        this.router.post('/api/health/thresholds', (req, res) => {
+            try {
+                const thresholds = req.body;
+                this.healthMonitor.updateAlertThresholds(thresholds);
+                res.json({ 
+                    success: true, 
+                    thresholds: this.healthMonitor.alertThresholds,
+                    message: 'Alert thresholds updated'
+                });
+            } catch (error) {
+                res.status(500).json({ error: error.message });
+            }
+        });
+
+        // Clear alerts
+        this.router.post('/api/health/alerts/clear', (req, res) => {
+            try {
+                this.healthMonitor.clearAlerts();
+                res.json({ 
+                    success: true, 
+                    message: 'Alerts cleared'
+                });
+            } catch (error) {
+                res.status(500).json({ error: error.message });
+            }
+        });
+
+        // Performance metrics
+        this.router.get('/api/health/performance', (req, res) => {
+            try {
+                res.json({
+                    monitoringState: this.monitoringState,
+                    performanceMetrics: this.healthMonitor.performanceMetrics,
+                    connectionHealth: this.healthMonitor.connectionHealth
+                });
+            } catch (error) {
+                res.status(500).json({ error: error.message });
+            }
+        });
     }
 
     /**
@@ -1023,6 +1298,12 @@ class RabbitMQAdmin {
      */
     async shutdown() {
         this.logger.info('Shutting down RabbitMQ Dashboard...');
+
+        // Stop health monitoring
+        if (this.healthMonitor) {
+            this.healthMonitor.stop();
+            this.logger.info('Health monitoring stopped');
+        }
 
         // Close WebSocket connections
         if (this.io) {

@@ -11,6 +11,8 @@ A modern, intuitive, and lightweight admin UI for RabbitMQ, designed to make mon
 - **Message Inspection** - View message contents without consuming them from the queue
 - **Message Publishing** - Send messages directly to exchanges with JSON validation and formatting
 - **AMQP Connection** - Direct AMQP connection for enhanced reliability and performance
+- **🔍 Advanced Debugging** - Comprehensive debugging panel with real-time connection monitoring, performance metrics, and detailed activity logging
+- **❤️ Health Monitoring** - Automated health checks with configurable alerts, performance tracking, and connection status monitoring
 - **Dark Mode** - Automatic dark mode support based on system preferences
 - **Responsive Design** - Works on desktop, tablet, and mobile devices
 - **Search Functionality** - Quickly find queues, exchanges, and bindings
@@ -102,6 +104,28 @@ npm run backend
 npm run frontend
 ```
 
+## 🔍 Debugging and Monitoring
+
+RMQ Board includes comprehensive debugging and health monitoring features:
+
+### Debug Panel
+- **Real-time Connection Monitoring**: Track HTTP and AMQP connection attempts, successes, and failures
+- **Performance Metrics**: Monitor response times, success rates, and operation counts
+- **Session Management**: View debug session information and control debug levels
+- **Activity Logging**: Track recent operations and errors with detailed context
+
+### Health Monitor
+- **Connection Health Checks**: Automated monitoring of HTTP and AMQP connections
+- **Alert System**: Configurable thresholds for response time, error rates, and failures
+- **Performance Tracking**: Real-time latency monitoring and trend analysis
+- **Alert Management**: View, clear, and configure alerts
+
+Access these features through the navigation menu:
+- **Debug Panel**: `/debug` - Comprehensive debugging interface
+- **Health Monitor**: `/health` - Health monitoring and alert management
+
+For detailed documentation, see [DEBUGGING.md](packages/backend/DEBUGGING.md).
+
 ### Environment Variables
 
 #### Backend (`.env` file in packages/backend):
@@ -115,6 +139,16 @@ SSL_VERIFY=false
 PORT=3001
 LOG_LEVEL=debug
 REFRESH_INTERVAL=10000
+
+# Debugging and monitoring settings
+DEBUG_ENABLED=true
+DEBUG_LEVEL=detailed
+HEALTH_CHECK_INTERVAL=30000
+PERFORMANCE_CHECK_INTERVAL=60000
+RESPONSE_TIME_THRESHOLD=5000
+ERROR_RATE_THRESHOLD=0.1
+CONSECUTIVE_FAILURE_THRESHOLD=3
+MEMORY_USAGE_THRESHOLD=0.8
 ```
 
 #### Frontend (`.env` file in packages/frontend):
